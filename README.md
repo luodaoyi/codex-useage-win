@@ -26,7 +26,7 @@ The widget reads usage limits from the current Codex account and displays them i
 
 ## Screenshots
 
-### Standard Mode
+### Standard Mode (with smart ranking)
 
 ![CodexUsageBar standard mode](IMG/3.png)
 
@@ -41,9 +41,15 @@ The widget reads usage limits from the current Codex account and displays them i
 - Reads `%USERPROFILE%\.codex\auth.json` or `%CODEX_HOME%\auth.json`
 - Requests `GET https://chatgpt.com/backend-api/wham/usage`
 - Three display modes:
-  - Standard mode: hero status, four metrics, weekly pace bar, budget marker, footer details, refresh time, and countdown
+  - Standard mode: plan and reset-credit inventory, remaining bars, and action buttons
   - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
   - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
+- Smart ranking (off by default):
+  - Software engineering: `https://codexradar.com/api/intelligence-efficiency-metrics?refresh=1`
+  - Visual-spatial: `https://codexradar.com/api/visual-spatial-reasoning?refresh=1`
+  - Sorted by score, with time and cost columns
+  - On-panel model-family chips generated from the current JSON, multi-select
+  - 10 rows per page with Prev / Next
 - Desktop overlay widget with drag and resize support
 - Dynamic coloring based on current pace
 - Launch at startup toggle
@@ -55,11 +61,12 @@ The widget reads usage limits from the current Codex account and displays them i
 ## Refresh Behavior
 
 - Remote usage API refresh: every `60` seconds
+- Smart ranking refresh: every `5` minutes when enabled
 - Local countdown repaint: every `1` second
 - Bottom-right area shows:
   - last successful refresh time
   - countdown to the next automatic refresh
-- Right-click menu `Refresh now`: force refresh immediately
+- Right-click menu `Refresh now`: force-refresh usage, and radar scores if ranking is on
 
 ## Usage
 
@@ -68,13 +75,16 @@ The widget reads usage limits from the current Codex account and displays them i
 - Taskbar mode stays docked and does not support dragging or resizing
 - Right-click menu:
   - `Refresh now`
+  - `Refresh token`
   - `Launch at startup`
   - `Always on top`
   - `Lock position`
   - `Display mode`
+  - `Smart ranking`: `Off` / `Software engineering` / `Visual-spatial`
   - `Language`
   - `Reset widget position`
   - `Exit`
+- Ranking panel: click `All` / `GPT` / `Grok` chips to multi-select families; use `Prev` / `Next` to page
 
 Position and size are stored in:
 
