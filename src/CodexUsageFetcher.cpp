@@ -251,6 +251,116 @@ std::optional<long long> ParseIso8601UnixSeconds(const std::string& text) {
     }
 }
 
+struct ResolvedProxy {
+    bool useNamedProxy = false;
+    std::wstring server;  // host:port for WINHTTP_ACCESS_TYPE_NAMED_PROXY
+    std::wstring bypass;  // semicolon-separated WinHTTP bypass list
+};
+
+std::wstring TrimAsciiWs(std::wstring value) {
+    while (!value.empty() && (value.front() == L' ' || value.front() == L'\t')) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && (value.back() == L' ' || value.back() == L'\t')) {
+        value.pop_back();
+    }
+    return value;
+}
+
+// Accept http(s)://host:port, host:port, or scheme-relative forms. Auth userinfo is ignored (KISS).
+std::wstring NormalizeProxyServer(std::wstring value) {
+    value = TrimAsciiWs(std::move(value));
+    if (value.empty()) {
+        return {};
+    }
+
+    // Strip surrounding quotes sometimes present in shell env values.
+    if (value.size() >= 2 && ((value.front() == L'"' && value.back() == L'"')
+        || (value.front() == L'\'' && value.back() == L'\''))) {
+        value = value.substr(1, value.size() - 2);
+        value = TrimAsciiWs(std::move(value));
+    }
+
+    auto stripScheme = [&](const std::wstring& scheme) {
+        if (value.size() < scheme.size()) {
+            return;
+        }
+        for (size_t i = 0; i < scheme.size(); ++i) {
+            const wchar_t a = value[i] >= L'A' && value[i] <= L'Z'
+                ? static_cast<wchar_t>(value[i] - L'A' + L'a')
+                : value[i];
+            const wchar_t b = scheme[i] >= L'A' && scheme[i] <= L'Z'
+                ? static_cast<wchar_t>(scheme[i] - L'A' + L'a')
+                : scheme[i];
+            if (a != b) {
+                return;
+            }
+        }
+        value.erase(0, scheme.size());
+    };
+    stripScheme(L"https://");
+    stripScheme(L"http://");
+
+    // Drop credentials if present: user:pass@host:port
+    const size_t at = value.find(L'@');
+    if (at != std::wstring::npos) {
+        value.erase(0, at + 1);
+    }
+
+    // If path/query sneaks in, keep host:port only.
+    const size_t slash = value.find(L'/');
+    if (slash != std::wstring::npos) {
+        value.resize(slash);
+    }
+
+    return TrimAsciiWs(std::move(value));
+}
+
+std::wstring NormalizeProxyBypass(std::wstring value) {
+    value = TrimAsciiWs(std::move(value));
+    if (value.empty()) {
+        return {};
+    }
+    for (wchar_t& ch : value) {
+        if (ch == L',') {
+            ch = L';';
+        }
+    }
+    return value;
+}
+
+ResolvedProxy ResolveHttpProxyFromEnv() {
+    ResolvedProxy proxy;
+    // Windows env lookup is case-insensitive; still prefer common names in priority order.
+    const wchar_t* proxyNames[] = {
+        L"HTTPS_PROXY", L"https_proxy", L"HTTP_PROXY", L"http_proxy",
+    };
+    for (const wchar_t* name : proxyNames) {
+        if (const auto raw = ReadEnv(name)) {
+            const std::wstring server = NormalizeProxyServer(*raw);
+            if (!server.empty()) {
+                proxy.useNamedProxy = true;
+                proxy.server = server;
+                break;
+            }
+        }
+    }
+    if (!proxy.useNamedProxy) {
+        return proxy;
+    }
+
+    const wchar_t* bypassNames[] = { L"NO_PROXY", L"no_proxy" };
+    for (const wchar_t* name : bypassNames) {
+        if (const auto raw = ReadEnv(name)) {
+            proxy.bypass = NormalizeProxyBypass(*raw);
+            if (!proxy.bypass.empty()) {
+                break;
+            }
+        }
+    }
+    return proxy;
+}
+
 std::optional<std::string> HttpExchange(
     const std::wstring& userAgent,
     const std::wstring& host,
@@ -263,11 +373,28 @@ std::optional<std::string> HttpExchange(
         errorMessage->clear();
     }
 
-    HINTERNET session = WinHttpOpen(userAgent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    const ResolvedProxy proxy = ResolveHttpProxyFromEnv();
+    HINTERNET session = nullptr;
+    if (proxy.useNamedProxy) {
+        session = WinHttpOpen(
+            userAgent.c_str(),
+            WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+            proxy.server.c_str(),
+            proxy.bypass.empty() ? WINHTTP_NO_PROXY_BYPASS : proxy.bypass.c_str(),
+            0);
+    } else {
+        session = WinHttpOpen(
+            userAgent.c_str(),
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            WINHTTP_NO_PROXY_NAME,
+            WINHTTP_NO_PROXY_BYPASS,
+            0);
+    }
     if (session == nullptr) {
         if (errorMessage != nullptr) {
-            *errorMessage = L"WinHttpOpen failed";
+            *errorMessage = proxy.useNamedProxy
+                ? (L"WinHttpOpen failed (proxy " + proxy.server + L")")
+                : std::wstring(L"WinHttpOpen failed");
         }
         return std::nullopt;
     }

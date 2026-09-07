@@ -38,10 +38,11 @@
 
 - 原生 `Win32 + Direct2D + DirectWrite + WinHTTP`
 - 无 `C#`、无 `WebView`
-- 读取 `%USERPROFILE%\.codex\auth.json` 或 `%CODEX_HOME%\auth.json`
+- 优先读取可执行文件同目录的 `auth.json`，否则读取 `%USERPROFILE%\.codex\auth.json` 或 `%CODEX_HOME%\auth.json`
 - 请求 `GET https://chatgpt.com/backend-api/wham/usage`
+- 支持通过环境变量配置请求级 HTTP(S) 代理（不改系统全局代理）
 - 三种显示模式：
-  - 标准模式：套餐与重置卡、限额进度条、底部操作按钮
+  - 标准模式：套餐与重置卡、限额进度条、底部刷新按钮（重置额度改走右键菜单）
   - 简单模式：只显示 `5小时剩余`、`本周剩余` 和状态标签，适合更紧凑的小卡片
   - 任务栏模式：更小的剩余额度小条，自动贴近当前显示器的任务栏边缘，并固定贴边显示
 - 智能评分排名（默认关闭）：
@@ -76,6 +77,7 @@
 - 右键菜单：
   - `立即刷新`
   - `刷新 Token`
+  - `重置额度…`（额度重置主入口；需连续确认两次后再弹窗最终确认）
   - `开机自启`
   - `始终置顶`
   - `固定位置`
@@ -93,6 +95,29 @@
 开机自启使用当前用户注册表：
 
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+
+## HTTP(S) 代理
+
+如需在不设置 Windows 系统全局代理的情况下访问用量接口，可设置进程环境变量（优先级从高到低）：
+
+- `HTTPS_PROXY` / `https_proxy`
+- `HTTP_PROXY` / `http_proxy`
+
+可选绕过列表：
+
+- `NO_PROXY` / `no_proxy`（逗号或分号分隔）
+
+示例（当前用户会话）：
+
+```cmd
+set HTTPS_PROXY=http://127.0.0.1:7890
+CodexUsageBar.exe
+```
+
+说明：
+
+- 代理只作用于本程序的 WinHTTP 请求，不会修改系统代理设置
+- 可执行文件同目录的 `auth.json` 仅用于登录凭据，与代理配置无关
 
 ## 本地构建
 

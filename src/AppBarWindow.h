@@ -79,6 +79,7 @@ private:
     void RequestLatestReleaseCheck(bool force);
     void OnLatestReleaseChecked(ReleaseVersionInfo* info);
     void OnResetCreditConsumed(ConsumeResetCreditResult* result);
+    void ArmOrConsumeResetCredit();
     void RequestConsumeResetCredit();
     void RequestRefreshToken();
     void OnTokenRefreshed(TokenRefreshResult* result);
@@ -106,7 +107,6 @@ private:
     void RestartModelScoresTimer();
     int GetModelScoresPanelHeight() const;
     bool TryHandleActionButtonClick(POINT clientPoint);
-    RECT GetResetCreditButtonRect(const RECT& clientRect) const;
     std::wstring BuildResetCreditsSummaryText() const;
     std::wstring BuildResetCreditsExpiryText() const;
     std::wstring CreateRedeemRequestId() const;
@@ -158,7 +158,7 @@ private:
     int modelScoresPage_ = 0;
     bool hasReleaseCheckResult_ = false;
     bool updateAvailable_ = false;
-    // 0 = idle, 1/2 = armed steps, 3rd click opens MessageBox before consume.
+    // 0 = idle, 1/2 = armed steps (menu), 3rd selection opens MessageBox before consume.
     int resetCreditConfirmStep_ = 0;
     Language language_ = Language::English;
     bool hasSavedRect_ = false;
@@ -175,7 +175,6 @@ private:
     std::wstring latestReleaseTag_;
     std::wstring releaseCheckErrorMessage_;
     std::wstring resetCreditActionMessage_;
-    RECT resetCreditButtonRect_ = {};
     RECT refreshButtonRect_ = {};
     RECT modelScoresPrevRect_ = {};
     RECT modelScoresNextRect_ = {};

@@ -38,10 +38,11 @@ The widget reads usage limits from the current Codex account and displays them i
 
 - Native `Win32 + Direct2D + DirectWrite + WinHTTP`
 - No `C#`, no `WebView`
-- Reads `%USERPROFILE%\.codex\auth.json` or `%CODEX_HOME%\auth.json`
+- Prefers `auth.json` next to the executable, otherwise `%USERPROFILE%\.codex\auth.json` or `%CODEX_HOME%\auth.json`
 - Requests `GET https://chatgpt.com/backend-api/wham/usage`
+- Optional request-level HTTP(S) proxy via env vars (does not change the system proxy)
 - Three display modes:
-  - Standard mode: plan and reset-credit inventory, remaining bars, and action buttons
+  - Standard mode: plan and reset-credit inventory, remaining bars, and a refresh button (reset credits moved to the right-click menu)
   - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
   - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
 - Smart ranking (off by default):
@@ -76,6 +77,7 @@ The widget reads usage limits from the current Codex account and displays them i
 - Right-click menu:
   - `Refresh now`
   - `Refresh token`
+  - `Reset credits...` (primary reset-credit entry; arm twice, then a final MessageBox)
   - `Launch at startup`
   - `Always on top`
   - `Lock position`
@@ -93,6 +95,31 @@ Position and size are stored in:
 Startup registration uses the current user registry key:
 
 - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+
+## HTTP(S) Proxy
+
+To fetch usage through a proxy without changing the Windows system proxy, set process environment variables (high → low priority):
+
+- `HTTPS_PROXY` / `https_proxy`
+- `HTTP_PROXY` / `http_proxy`
+
+Optional bypass list:
+
+- `NO_PROXY` / `no_proxy` (comma or semicolon separated)
+
+Example:
+
+```cmd
+set HTTPS_PROXY=http://127.0.0.1:7890
+CodexUsageBar.exe
+```
+
+Notes:
+
+- Proxy applies only to this app's WinHTTP requests
+- `auth.json` next to the exe is for credentials only and is separate from proxy settings
+
+See also [README-zh.md](README-zh.md).
 
 ## Build Locally
 
