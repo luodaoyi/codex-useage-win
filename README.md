@@ -28,7 +28,7 @@ The widget reads usage limits from the current Codex account and displays them i
 
 ### Standard Mode (with smart ranking)
 
-![CodexUsageBar standard mode](IMG/3.png)
+![CodexUsageBar standard mode](IMG/standard-en.png)
 
 ### Simple Mode
 
