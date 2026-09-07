@@ -8,9 +8,11 @@
 #include <winhttp.h>
 
 #include <algorithm>
+#include <cmath>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -30,6 +32,149 @@ std::wstring Utf8ToWide(const std::string& input) {
     std::wstring output(static_cast<size_t>(size), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), output.data(), size);
     return output;
+}
+
+std::wstring FormatRadarToken(const std::string& token) {
+    if (token == "gpt") {
+        return L"GPT";
+    }
+
+    std::wstring wide = Utf8ToWide(token);
+    if (!wide.empty() && wide[0] >= L'a' && wide[0] <= L'z') {
+        wide[0] = static_cast<wchar_t>(wide[0] - (L'a' - L'A'));
+    }
+    return wide;
+}
+
+bool TokenLooksLikeVersion(const std::string& token) {
+    for (char ch : token) {
+        if (ch >= '0' && ch <= '9') {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring FormatRadarModelLabel(const std::string& model, const std::string& effort) {
+    std::wstring result;
+    size_t start = 0;
+    while (start <= model.size()) {
+        const size_t end = std::min(model.find('-', start), model.size());
+        const std::string token = model.substr(start, end - start);
+        if (!token.empty()) {
+            const std::wstring part = FormatRadarToken(token);
+            if (result.empty()) {
+                result = part;
+            } else if (TokenLooksLikeVersion(token)) {
+                result += L'-';
+                result += part;
+            } else {
+                result += L' ';
+                result += part;
+            }
+        }
+        if (end == model.size()) {
+            break;
+        }
+        start = end + 1;
+    }
+    if (!effort.empty()) {
+        if (!result.empty()) {
+            result += L' ';
+        }
+        result += Utf8ToWide(effort);
+    }
+    return result;
+}
+
+std::string ExtractRadarFamilyKey(const std::string& model) {
+    std::string lower = model;
+    for (char& ch : lower) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        }
+    }
+    const size_t dash = lower.find('-');
+    const std::string token = (dash == std::string::npos) ? lower : lower.substr(0, dash);
+    return token.empty() ? lower : token;
+}
+
+bool FillModelIqScoreFromPoint(const jsonlite::Value& pointNode, ModelIqScore* score) {
+    if (score == nullptr) {
+        return false;
+    }
+
+    const jsonlite::Value* scoreNode = pointNode.Find("iq");
+    if (scoreNode == nullptr) {
+        return false;
+    }
+    const auto scoreValue = scoreNode->AsNumber();
+    if (!scoreValue.has_value()) {
+        return false;
+    }
+
+    score->score = *scoreValue;
+    std::string modelUtf8;
+    std::string effortUtf8;
+    if (const jsonlite::Value* modelNode = pointNode.Find("model"); modelNode != nullptr) {
+        if (auto model = modelNode->AsString(); model.has_value() && !model->empty()) {
+            modelUtf8 = std::string(*model);
+            score->model = Utf8ToWide(modelUtf8);
+        }
+    }
+    if (const jsonlite::Value* effortNode = pointNode.Find("effort"); effortNode != nullptr) {
+        if (auto effort = effortNode->AsString(); effort.has_value() && !effort->empty()) {
+            effortUtf8 = std::string(*effort);
+            score->effort = Utf8ToWide(effortUtf8);
+        }
+    }
+    if (const jsonlite::Value* passedNode = pointNode.Find("passed"); passedNode != nullptr) {
+        if (auto passed = passedNode->AsNumber(); passed.has_value()) {
+            score->passed = static_cast<int>(*passed);
+        }
+    }
+    const jsonlite::Value* totalNode = pointNode.Find("total");
+    if (totalNode == nullptr) {
+        totalNode = pointNode.Find("valid_tasks");
+    }
+    if (totalNode != nullptr) {
+        if (auto total = totalNode->AsNumber(); total.has_value()) {
+            score->tasks = static_cast<int>(*total);
+        }
+    }
+    if (const jsonlite::Value* priceNode = pointNode.Find("average_price_usd");
+        priceNode != nullptr && !priceNode->IsNull()) {
+        if (auto price = priceNode->AsNumber(); price.has_value() && std::isfinite(*price)) {
+            score->averagePriceUsd = *price;
+            score->hasPrice = true;
+        }
+    }
+    if (const jsonlite::Value* minutesNode = pointNode.Find("average_minutes");
+        minutesNode != nullptr && !minutesNode->IsNull()) {
+        if (auto minutes = minutesNode->AsNumber(); minutes.has_value() && std::isfinite(*minutes) && *minutes >= 0.0) {
+            score->averageMinutes = *minutes;
+            score->hasDuration = true;
+        }
+    }
+    if (score->score >= 100.0) {
+        score->status = L"green";
+    } else if (score->score >= 85.0) {
+        score->status = L"yellow";
+    } else {
+        score->status = L"red";
+    }
+    score->label = FormatRadarModelLabel(modelUtf8, effortUtf8);
+    const std::string familyKey = ExtractRadarFamilyKey(modelUtf8);
+    score->familyKey = Utf8ToWide(familyKey);
+    score->familyLabel = FormatRadarModelLabel(familyKey, "");
+    return !score->label.empty();
+}
+
+std::wstring ModelIqDedupKey(const ModelIqScore& score) {
+    if (!score.model.empty() || !score.effort.empty()) {
+        return score.model + L"|" + score.effort;
+    }
+    return score.label;
 }
 
 std::wstring JoinPath(const std::wstring& base, const std::wstring& child) {
@@ -667,6 +812,29 @@ ReleaseVersionInfo CodexUsageFetcher::FetchLatestRelease() const {
     return info;
 }
 
+ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
+    ModelIqSnapshot snapshot;
+    snapshot.kind = kind;
+
+    const wchar_t* path = kind == RadarMetricKind::VisualSpatial
+        ? L"/api/visual-spatial-reasoning?refresh=1"
+        : L"/api/intelligence-efficiency-metrics?refresh=1";
+
+    std::wstring errorMessage;
+    std::optional<std::string> radarJson = HttpGetCodexRadarMetricsJson(path, &errorMessage);
+    if (!radarJson.has_value()) {
+        snapshot.errorMessage = errorMessage.empty() ? L"CodexRadar request failed" : errorMessage;
+        return snapshot;
+    }
+
+    snapshot = ParseModelIqJson(*radarJson, &errorMessage);
+    snapshot.kind = kind;
+    if (!snapshot.success) {
+        snapshot.errorMessage = errorMessage;
+    }
+    return snapshot;
+}
+
 std::wstring CodexUsageFetcher::ResolveAuthJsonPath() const {
     // Prefer auth.json next to the executable; fall back to CODEX_HOME / ~/.codex.
     wchar_t modulePath[MAX_PATH] = {};
@@ -951,6 +1119,21 @@ std::optional<std::string> CodexUsageFetcher::HttpGetLatestReleaseJson(std::wstr
         errorMessage);
 }
 
+std::optional<std::string> CodexUsageFetcher::HttpGetCodexRadarMetricsJson(
+    const wchar_t* path,
+    std::wstring* errorMessage) const {
+    return HttpGetJson(
+        L"CodexUsageBar/0.1",
+        L"codexradar.com",
+        path != nullptr ? path : L"/api/intelligence-efficiency-metrics?refresh=1",
+        {
+            L"Accept: application/json",
+            L"Cache-Control: no-cache",
+            L"User-Agent: CodexUsageBar"
+        },
+        errorMessage);
+}
+
 UsageSnapshot CodexUsageFetcher::ParseUsageJson(const std::string& jsonText, std::wstring* errorMessage) const {
     UsageSnapshot snapshot;
 
@@ -1187,4 +1370,70 @@ ReleaseVersionInfo CodexUsageFetcher::ParseLatestReleaseJson(const std::string& 
     info.latestTag = Utf8ToWide(std::string(*tag));
     info.success = true;
     return info;
+}
+
+ModelIqSnapshot CodexUsageFetcher::ParseModelIqJson(const std::string& jsonText, std::wstring* errorMessage) const {
+    ModelIqSnapshot snapshot;
+
+    jsonlite::Parser parser(jsonText);
+    std::optional<jsonlite::Value> root = parser.Parse();
+    if (!root.has_value()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = L"CodexRadar JSON parse failed: " + Utf8ToWide(parser.Error());
+        }
+        return snapshot;
+    }
+
+    if (const jsonlite::Value* updatedAt = root->Find("source_updated_at"); updatedAt != nullptr) {
+        if (auto text = updatedAt->AsString(); text.has_value()) {
+            snapshot.updatedAt = Utf8ToWide(std::string(*text));
+        }
+    }
+
+    const jsonlite::Value* pointsNode = root->Find("points");
+    const jsonlite::Value::Array* points = pointsNode != nullptr ? pointsNode->AsArray() : nullptr;
+    if (points == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = L"CodexRadar payload missing points";
+        }
+        return snapshot;
+    }
+
+    std::map<std::wstring, ModelIqScore> uniqueScores;
+    for (const jsonlite::Value& point : *points) {
+        if (!point.IsObject()) {
+            continue;
+        }
+        ModelIqScore score;
+        if (!FillModelIqScoreFromPoint(point, &score)) {
+            continue;
+        }
+        const std::wstring key = ModelIqDedupKey(score);
+        if (key.empty() || uniqueScores.find(key) != uniqueScores.end()) {
+            continue;
+        }
+        uniqueScores.emplace(key, std::move(score));
+    }
+
+    snapshot.scores.reserve(uniqueScores.size());
+    for (auto& entry : uniqueScores) {
+        snapshot.scores.push_back(std::move(entry.second));
+    }
+    std::sort(snapshot.scores.begin(), snapshot.scores.end(),
+        [](const ModelIqScore& lhs, const ModelIqScore& rhs) {
+            if (lhs.score != rhs.score) {
+                return lhs.score > rhs.score;
+            }
+            return lhs.label < rhs.label;
+        });
+
+    if (snapshot.scores.empty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = L"CodexRadar points has no scores";
+        }
+        return snapshot;
+    }
+
+    snapshot.success = true;
+    return snapshot;
 }

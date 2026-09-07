@@ -72,6 +72,35 @@ struct TokenRefreshResult {
     std::wstring errorMessage;
 };
 
+enum class RadarMetricKind {
+    SoftwareEngineering = 0,
+    VisualSpatial = 1,
+};
+
+struct ModelIqScore {
+    std::wstring label;
+    std::wstring model;
+    std::wstring effort;
+    std::wstring status;
+    std::wstring familyKey;
+    std::wstring familyLabel;
+    double score = 0.0;
+    double averagePriceUsd = 0.0;
+    bool hasPrice = false;
+    double averageMinutes = 0.0;
+    bool hasDuration = false;
+    int passed = 0;
+    int tasks = 0;
+};
+
+struct ModelIqSnapshot {
+    bool success = false;
+    RadarMetricKind kind = RadarMetricKind::SoftwareEngineering;
+    std::wstring errorMessage;
+    std::wstring updatedAt;
+    std::vector<ModelIqScore> scores;
+};
+
 class CodexUsageFetcher {
 public:
     struct AuthCredentials {
@@ -84,6 +113,7 @@ public:
 
     UsageSnapshot Fetch() const;
     ReleaseVersionInfo FetchLatestRelease() const;
+    ModelIqSnapshot FetchModelIq(RadarMetricKind kind) const;
 
     // Force OAuth refresh and write tokens back to auth.json (manual menu action).
     TokenRefreshResult ForceRefreshAuthTokens() const;
@@ -104,6 +134,7 @@ private:
         const AuthCredentials& credentials,
         std::wstring* errorMessage) const;
     std::optional<std::string> HttpGetLatestReleaseJson(std::wstring* errorMessage) const;
+    std::optional<std::string> HttpGetCodexRadarMetricsJson(const wchar_t* path, std::wstring* errorMessage) const;
     bool HttpPostConsumeRateLimitResetCredit(
         const AuthCredentials& credentials,
         const std::wstring& redeemRequestId,
@@ -112,4 +143,5 @@ private:
     void EnrichSubscriptionFromIdToken(UsageSnapshot* snapshot, const std::string& idToken) const;
     RateLimitResetCreditsInfo ParseRateLimitResetCreditsJson(const std::string& jsonText, std::wstring* errorMessage) const;
     ReleaseVersionInfo ParseLatestReleaseJson(const std::string& jsonText, std::wstring* errorMessage) const;
+    ModelIqSnapshot ParseModelIqJson(const std::string& jsonText, std::wstring* errorMessage) const;
 };

@@ -9,6 +9,8 @@
 #include <atomic>
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 class AppBarWindow {
 public:
@@ -23,9 +25,12 @@ private:
     static constexpr UINT kReleaseVersionUpdatedMessage = WM_APP + 2;
     static constexpr UINT kResetCreditConsumedMessage = WM_APP + 3;
     static constexpr UINT kTokenRefreshedMessage = WM_APP + 4;
+    static constexpr UINT kModelScoresUpdatedMessage = WM_APP + 5;
     static constexpr UINT_PTR kCountdownTimerId = 1;
     static constexpr UINT_PTR kRefreshTimerId = 2;
     static constexpr UINT_PTR kResetConfirmTimerId = 3;
+    static constexpr UINT_PTR kModelScoresTimerId = 4;
+    static constexpr int kModelScoresRefreshIntervalSeconds = 300;
 
     enum class Language {
         English = 0,
@@ -77,6 +82,29 @@ private:
     void RequestConsumeResetCredit();
     void RequestRefreshToken();
     void OnTokenRefreshed(TokenRefreshResult* result);
+    void RequestModelScoresRefresh(bool force);
+    void OnModelScoresUpdated(ModelIqSnapshot* snapshot);
+    void SetModelScoreMode(bool enabled, RadarMetricKind kind);
+    void ToggleModelScoreFamily(const std::wstring& familyKey);
+    void SetModelScoresPage(int page);
+    void ClampModelScoresPage();
+    bool IsModelScoreFamilySelected(const std::wstring& familyKey) const;
+    bool MatchesModelScoreFamily(const ModelIqScore& score) const;
+    std::vector<std::pair<std::wstring, std::wstring>> ListModelScoreFamilies() const;
+    int CountFilteredModelScores() const;
+    int GetModelScoresPageCount() const;
+    int GetModelScoresVisibleRowCount() const;
+    int GetModelScoreFilterBandHeight(int innerWidth) const;
+
+    struct ModelScoreFilterChip {
+        RECT rect = {};
+        std::wstring key;
+        std::wstring label;
+        bool selected = false;
+    };
+    std::vector<ModelScoreFilterChip> BuildModelScoreFilterChips(int left, int top, int right) const;
+    void RestartModelScoresTimer();
+    int GetModelScoresPanelHeight() const;
     bool TryHandleActionButtonClick(POINT clientPoint);
     RECT GetResetCreditButtonRect(const RECT& clientRect) const;
     std::wstring BuildResetCreditsSummaryText() const;
@@ -117,11 +145,17 @@ private:
     std::atomic_bool releaseCheckInFlight_ = false;
     std::atomic_bool resetCreditInFlight_ = false;
     std::atomic_bool tokenRefreshInFlight_ = false;
+    std::atomic_bool modelScoresInFlight_ = false;
     bool lightTheme_ = false;
     bool alwaysOnTop_ = false;
     bool lockPosition_ = false;
     bool simpleMode_ = false;
     bool taskbarMode_ = false;
+    bool showModelScores_ = false;
+    RadarMetricKind modelScoreKind_ = RadarMetricKind::SoftwareEngineering;
+    std::vector<std::wstring> selectedModelFamilyKeys_;
+    std::vector<ModelScoreFilterChip> modelScoreFilterChips_;
+    int modelScoresPage_ = 0;
     bool hasReleaseCheckResult_ = false;
     bool updateAvailable_ = false;
     // 0 = idle, 1/2 = armed steps, 3rd click opens MessageBox before consume.
@@ -143,8 +177,11 @@ private:
     std::wstring resetCreditActionMessage_;
     RECT resetCreditButtonRect_ = {};
     RECT refreshButtonRect_ = {};
+    RECT modelScoresPrevRect_ = {};
+    RECT modelScoresNextRect_ = {};
 
     UsageSnapshot snapshot_;
+    ModelIqSnapshot modelScores_;
     CodexUsageFetcher fetcher_;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
