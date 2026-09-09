@@ -46,8 +46,8 @@
   - 简单模式：只显示 `5小时剩余`、`本周剩余` 和状态标签，适合更紧凑的小卡片
   - 任务栏模式：更小的剩余额度小条，自动贴近当前显示器的任务栏边缘，并固定贴边显示
 - 智能评分排名（默认关闭）：
-  - 软件工程能力：`https://codexradar.com/api/intelligence-efficiency-metrics?refresh=1`
-  - 视觉空间能力：`https://codexradar.com/api/visual-spatial-reasoning?refresh=1`
+  - 软件工程能力：`https://api.codexradar.com/api/v1/intelligence-efficiency`
+  - 视觉空间能力：`https://api.codexradar.com/api/v1/intelligence-efficiency?benchmark=pompeii-adjacency`
   - 按分数倒序，显示分数、时间和金额
   - 面板上按 JSON 动态生成模型组按钮，可多选过滤
   - 每页 10 条，支持上一页 / 下一页

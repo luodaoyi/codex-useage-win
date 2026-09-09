@@ -944,8 +944,8 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     snapshot.kind = kind;
 
     const wchar_t* path = kind == RadarMetricKind::VisualSpatial
-        ? L"/api/visual-spatial-reasoning?refresh=1"
-        : L"/api/intelligence-efficiency-metrics?refresh=1";
+        ? L"/api/v1/intelligence-efficiency?benchmark=pompeii-adjacency"
+        : L"/api/v1/intelligence-efficiency";
 
     std::wstring errorMessage;
     std::optional<std::string> radarJson = HttpGetCodexRadarMetricsJson(path, &errorMessage);
@@ -1251,8 +1251,8 @@ std::optional<std::string> CodexUsageFetcher::HttpGetCodexRadarMetricsJson(
     std::wstring* errorMessage) const {
     return HttpGetJson(
         L"CodexUsageBar/0.1",
-        L"codexradar.com",
-        path != nullptr ? path : L"/api/intelligence-efficiency-metrics?refresh=1",
+        L"api.codexradar.com",
+        path != nullptr ? path : L"/api/v1/intelligence-efficiency",
         {
             L"Accept: application/json",
             L"Cache-Control: no-cache",

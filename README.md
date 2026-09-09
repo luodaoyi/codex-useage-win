@@ -46,8 +46,8 @@ The widget reads usage limits from the current Codex account and displays them i
   - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
   - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
 - Smart ranking (off by default):
-  - Software engineering: `https://codexradar.com/api/intelligence-efficiency-metrics?refresh=1`
-  - Visual-spatial: `https://codexradar.com/api/visual-spatial-reasoning?refresh=1`
+  - Software engineering: `https://api.codexradar.com/api/v1/intelligence-efficiency`
+  - Visual-spatial: `https://api.codexradar.com/api/v1/intelligence-efficiency?benchmark=pompeii-adjacency`
   - Sorted by score, with time and cost columns
   - On-panel model-family chips generated from the current JSON, multi-select
   - 10 rows per page with Prev / Next

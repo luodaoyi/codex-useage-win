@@ -129,8 +129,8 @@ int RectHeight(const RECT& rect) {
 
 int CalculateDetailedMinimumWidgetHeight(HWND hwnd, int width) {
     (void)width;
-    // Weekly-only compact card (1 credit row), buttons packed under the bar.
-    return ScaleForDpi(hwnd, 210);
+    // Weekly-only compact card (1 credit row), refresh sits on the footer row.
+    return ScaleForDpi(hwnd, 184);
 }
 
 int CalculateSimpleMinimumWidgetHeight(HWND hwnd) {
@@ -586,7 +586,7 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
             const int extraRows = std::max(0, static_cast<int>(snapshot_.resetCredits.availableCredits.size()) - 1);
             height += extraRows * ScaleForDpi(hwnd_, 16);
         }
-        height = std::max(height, ScaleForDpi(hwnd_, 190));
+        height = std::max(height, ScaleForDpi(hwnd_, 164));
     }
     height += GetModelScoresPanelHeight();
     return height;
@@ -698,7 +698,7 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
     }
     const int filterH = GetModelScoreFilterBandHeight(std::max(1, innerWidth));
     const int rows = GetModelScoresVisibleRowCount();
-    // gap + box(padding + header + filter + rows + pager + attribution + padding)
+    // gap + box(padding + filter + header + rows + pager + attribution + padding)
     return ScaleForDpi(hwnd_, 6 + 4 + 16) + filterH + ScaleForDpi(hwnd_, 4 + rows * 16 + 18 + 14 + 4);
 }
 
@@ -1874,33 +1874,14 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         const int filterInnerLeft = left + innerPad;
         const int filterInnerRight = right - innerPad;
         const int filterH = GetModelScoreFilterBandHeight(std::max(1, filterInnerRight - filterInnerLeft));
-        const int boxH = pad + headerH + filterH + ScaleForDpi(hwnd_, 4) + rows * rowH + pagerH + footH + pad;
+        const int boxH = pad + filterH + headerH + ScaleForDpi(hwnd_, 4) + rows * rowH + pagerH + footH + pad;
         RECT box = MakeRect(left, top + gap, right, top + gap + boxH);
         fillRect(box, lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36));
         drawRectBorder(box, border);
 
-        const std::wstring title = modelScoreKind_ == RadarMetricKind::VisualSpatial
-            ? LocalizeText(L"Visual-spatial", L"视觉空间评分")
-            : LocalizeText(L"Software engineering", L"软件工程评分");
-        RECT headerLeft = MakeRect(box.left + innerPad, box.top + pad,
-            box.right - innerPad - metricColsW - colGap, box.top + pad + headerH);
-        RECT headerScore = MakeRect(box.right - innerPad - metricColsW, box.top + pad,
-            box.right - innerPad - timeColW - colGap - costColW - colGap, box.top + pad + headerH);
-        RECT headerTime = MakeRect(box.right - innerPad - timeColW - colGap - costColW, box.top + pad,
-            box.right - innerPad - costColW - colGap, box.top + pad + headerH);
-        RECT headerCost = MakeRect(box.right - innerPad - costColW, box.top + pad,
-            box.right - innerPad, box.top + pad + headerH);
-        drawTextBlock(textFormatFoot_.Get(), title, headerLeft, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Score", L"分数"), headerScore, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Time", L"时间"), headerTime, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Cost", L"金额"), headerCost, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-
+        const int filterTop = box.top + pad;
         modelScoreFilterChips_ = BuildModelScoreFilterChips(
-            box.left + innerPad, headerLeft.bottom, box.right - innerPad);
+            box.left + innerPad, filterTop, box.right - innerPad);
         const COLORREF chipSelectedBg = lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46);
         const COLORREF chipSelectedText = lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163);
         for (const ModelScoreFilterChip& chip : modelScoreFilterChips_) {
@@ -1913,7 +1894,28 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         }
 
-        int rowTop = headerLeft.bottom + filterH + ScaleForDpi(hwnd_, 4);
+        const std::wstring title = modelScoreKind_ == RadarMetricKind::VisualSpatial
+            ? LocalizeText(L"Visual-spatial", L"视觉空间评分")
+            : LocalizeText(L"Software engineering", L"软件工程评分");
+        const int headerTop = filterTop + filterH;
+        RECT headerLeft = MakeRect(box.left + innerPad, headerTop,
+            box.right - innerPad - metricColsW - colGap, headerTop + headerH);
+        RECT headerScore = MakeRect(box.right - innerPad - metricColsW, headerTop,
+            box.right - innerPad - timeColW - colGap - costColW - colGap, headerTop + headerH);
+        RECT headerTime = MakeRect(box.right - innerPad - timeColW - colGap - costColW, headerTop,
+            box.right - innerPad - costColW - colGap, headerTop + headerH);
+        RECT headerCost = MakeRect(box.right - innerPad - costColW, headerTop,
+            box.right - innerPad, headerTop + headerH);
+        drawTextBlock(textFormatFoot_.Get(), title, headerLeft, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Score", L"分数"), headerScore, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Time", L"时间"), headerTime, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Cost", L"金额"), headerCost, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+
+        int rowTop = headerLeft.bottom + ScaleForDpi(hwnd_, 4);
         std::vector<const ModelIqScore*> visibleScores;
         if (modelScores_.success) {
             const int start = modelScoresPage_ * kModelScoresPageSize;
@@ -2445,15 +2447,27 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         y += drawModelScoresPanel(y, clientRect.left + padX, clientRect.right - padX);
     }
 
-    // Refresh button under content. Reset credits live in the right-click menu (#3).
-    y += ScaleForDpi(hwnd_, 8);
-    const int actionH = ScaleForDpi(hwnd_, 22);
+    // Footer: version | refresh button | countdown. Reset credits live in the right-click menu.
+    y += ScaleForDpi(hwnd_, 4);
+    const int actionH = ScaleForDpi(hwnd_, 18);
     const int actionW = ScaleForDpi(hwnd_, 84);
-    const int actionTop = y;
-    const int actionBottom = actionTop + actionH;
-    RECT refreshRect = MakeRect(clientRect.right - padX - actionW, actionTop,
-        clientRect.right - padX, actionBottom);
+    const int actionGap = ScaleForDpi(hwnd_, 6);
+    const int footerRowTop = y;
+    const int footerRowBottom = footerRowTop + actionH;
+    const std::wstring footerLeft = GetVersionStatusText(true);
+    const std::wstring footerRight = refreshInFlight_
+        ? LocalizeText(L"Refreshing", L"刷新中")
+        : FormatRefreshCountdown(refreshCountdownSeconds_);
+    const int countdownW = std::max(
+        ScaleForDpi(hwnd_, 48),
+        static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), footerRight))) + ScaleForDpi(hwnd_, 4));
+    RECT countdownRect = MakeRect(clientRect.right - padX - countdownW, footerRowTop,
+        clientRect.right - padX, footerRowBottom);
+    RECT refreshRect = MakeRect(countdownRect.left - actionGap - actionW, footerRowTop,
+        countdownRect.left - actionGap, footerRowBottom);
     refreshButtonRect_ = refreshRect;
+    RECT footerLeftRect = MakeRect(clientRect.left + padX, footerRowTop,
+        refreshRect.left - actionGap, footerRowBottom);
 
     fillRect(refreshRect, lightTheme_ ? RGB(248, 249, 248) : RGB(40, 46, 42));
     drawRectBorder(refreshRect, border);
@@ -2463,19 +2477,9 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
             : LocalizeText(L"Refresh", L"刷新额度"),
         refreshRect, textPrimary,
         DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-
-    // Footer directly under buttons.
-    const std::wstring footerLeft = GetVersionStatusText(true);
-    const std::wstring footerRight = refreshInFlight_
-        ? LocalizeText(L"Refreshing", L"刷新中")
-        : FormatRefreshCountdown(refreshCountdownSeconds_);
-    RECT footerLeftRect = MakeRect(clientRect.left + padX, actionBottom + ScaleForDpi(hwnd_, 4),
-        clientRect.left + RectWidth(clientRect) / 2, actionBottom + ScaleForDpi(hwnd_, 18));
-    RECT footerRightRect = MakeRect(clientRect.left + RectWidth(clientRect) / 2, actionBottom + ScaleForDpi(hwnd_, 4),
-        clientRect.right - padX, actionBottom + ScaleForDpi(hwnd_, 18));
     drawTextBlock(textFormatFoot_.Get(), footerLeft, footerLeftRect, updateAvailable_ ? heroValue : textSecondary,
-        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-    drawTextBlock(textFormatFoot_.Get(), footerRight, footerRightRect, textSecondary,
+        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+    drawTextBlock(textFormatFoot_.Get(), footerRight, countdownRect, textSecondary,
         DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
 }
 
