@@ -2,6 +2,7 @@
 #include "AppVersion.h"
 
 #include <ShlObj.h>
+#include <shellapi.h>
 #include <winreg.h>
 #include <windowsx.h>
 
@@ -408,6 +409,11 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             GetCursorPos(&screenPoint);
             POINT clientPoint = screenPoint;
             ScreenToClient(hwnd_, &clientPoint);
+            if (modelScoresSourceRect_.right > modelScoresSourceRect_.left
+                && PtInRect(&modelScoresSourceRect_, clientPoint)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             switch (HitTestDragMode(clientPoint)) {
                 case DragMode::ResizeRight:
                     SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
@@ -1488,6 +1494,11 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
             }
             return true;
         }
+        if (modelScoresSourceRect_.right > modelScoresSourceRect_.left
+            && PtInRect(&modelScoresSourceRect_, clientPoint)) {
+            ShellExecuteW(hwnd_, L"open", L"https://codexradar.com/", nullptr, nullptr, SW_SHOWNORMAL);
+            return true;
+        }
     }
 
     if (refreshButtonRect_.right > refreshButtonRect_.left && PtInRect(&refreshButtonRect_, clientPoint)) {
@@ -1702,6 +1713,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
     refreshButtonRect_ = {};
     modelScoresPrevRect_ = {};
     modelScoresNextRect_ = {};
+    modelScoresSourceRect_ = {};
     modelScoreFilterChips_.clear();
     const PaceInfo pace = BuildPaceInfo(snapshot_);
     const int padX = ScaleForDpi(hwnd_, kHorizontalPadding);
@@ -1998,9 +2010,14 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
 
         RECT attrRect = MakeRect(box.left + innerPad, box.bottom - pad - footH,
             box.right - innerPad, box.bottom - pad);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Data: Codex Radar", L"数据来自 Codex 雷达"),
-            attrRect, textSecondary,
+        modelScoresSourceRect_ = attrRect;
+        const std::wstring sourceText = LocalizeText(L"Data: Codex Radar", L"数据来自 Codex 雷达");
+        const COLORREF linkColor = lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163);
+        drawTextBlock(textFormatFoot_.Get(), sourceText, attrRect, linkColor,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        const int linkWidth = static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), sourceText)));
+        const int underlineTop = attrRect.bottom - std::max(1, ScaleForDpi(hwnd_, 2));
+        fillRect(MakeRect(attrRect.left, underlineTop, attrRect.left + linkWidth, underlineTop + 1), linkColor);
         return gap + boxH;
     };
 

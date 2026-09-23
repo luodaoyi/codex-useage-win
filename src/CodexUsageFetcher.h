@@ -98,6 +98,7 @@ struct ModelIqSnapshot {
     RadarMetricKind kind = RadarMetricKind::SoftwareEngineering;
     std::wstring errorMessage;
     std::wstring updatedAt;
+    std::wstring benchmarkId;
     std::vector<ModelIqScore> scores;
 };
 

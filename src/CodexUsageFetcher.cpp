@@ -981,28 +981,16 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     std::wstring errorMessage;
     std::optional<std::string> radarJson;
     if (kind == RadarMetricKind::VisualSpatial) {
-        // Visual ranking has no static export yet; the v1 API benchmark filter is the only source.
         radarJson = HttpGetCodexRadarMetricsJson(
             L"api.codexradar.com",
             L"/api/v1/intelligence-efficiency?benchmark=pompeii-adjacency",
             &errorMessage);
     } else {
-        // Preferred: static JSON export served from codexradar.com/data (site CDN, no auth, always latest).
+        // Software engineering ranking is the deep-swe benchmark from the site API.
         radarJson = HttpGetCodexRadarMetricsJson(
             L"codexradar.com",
-            L"/data/intelligence-efficiency.json",
+            L"/api/intelligence-efficiency-metrics?refresh=1",
             &errorMessage);
-        if (!radarJson.has_value()) {
-            // Fallback: legacy v1 API (still live, same equal_latest_3 dataset).
-            std::wstring fallbackError;
-            radarJson = HttpGetCodexRadarMetricsJson(
-                L"api.codexradar.com",
-                L"/api/v1/intelligence-efficiency",
-                &fallbackError);
-            if (radarJson.has_value()) {
-                errorMessage.clear();
-            }
-        }
     }
 
     if (!radarJson.has_value()) {
@@ -1012,6 +1000,12 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
 
     snapshot = ParseModelIqJson(*radarJson, &errorMessage);
     snapshot.kind = kind;
+    if (snapshot.success && kind == RadarMetricKind::SoftwareEngineering && snapshot.benchmarkId != L"deep-swe") {
+        snapshot.success = false;
+        snapshot.scores.clear();
+        snapshot.errorMessage = L"CodexRadar benchmark_id is not deep-swe";
+        return snapshot;
+    }
     if (!snapshot.success) {
         snapshot.errorMessage = errorMessage;
     }
@@ -1590,6 +1584,11 @@ ModelIqSnapshot CodexUsageFetcher::ParseModelIqJson(const std::string& jsonText,
     if (const jsonlite::Value* updatedAt = root->Find("source_updated_at"); updatedAt != nullptr) {
         if (auto text = updatedAt->AsString(); text.has_value()) {
             snapshot.updatedAt = Utf8ToWide(std::string(*text));
+        }
+    }
+    if (const jsonlite::Value* benchmarkId = root->Find("benchmark_id"); benchmarkId != nullptr) {
+        if (auto text = benchmarkId->AsString(); text.has_value()) {
+            snapshot.benchmarkId = Utf8ToWide(std::string(*text));
         }
     }
 
