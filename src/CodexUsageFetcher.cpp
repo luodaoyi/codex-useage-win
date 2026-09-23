@@ -757,13 +757,48 @@ std::string EscapeJsonString(const std::string& value) {
     return escaped;
 }
 
-std::string CurrentUtcIso8601() {
-    const std::time_t now = std::time(nullptr);
+std::string UnixToUtcIso8601(long long unixSeconds) {
+    const std::time_t when = static_cast<std::time_t>(unixSeconds);
     std::tm utc = {};
-    gmtime_s(&utc, &now);
+    if (gmtime_s(&utc, &when) != 0) {
+        return {};
+    }
     char buffer[40] = {};
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) {
+        return {};
+    }
     return buffer;
+}
+
+std::string CurrentUtcIso8601() {
+    return UnixToUtcIso8601(static_cast<long long>(std::time(nullptr)));
+}
+
+std::optional<std::string> JsonStringField(const jsonlite::Value* object, const char* key) {
+    if (object == nullptr || key == nullptr) {
+        return std::nullopt;
+    }
+    const jsonlite::Value* node = object->Find(key);
+    if (node == nullptr) {
+        return std::nullopt;
+    }
+    auto value = node->AsString();
+    if (!value.has_value() || value->empty()) {
+        return std::nullopt;
+    }
+    return std::string(*value);
+}
+
+// Codex native auth.json nests credentials under "tokens".
+// CPA export is flat: access_token / id_token / refresh_token / account_id at the root.
+std::optional<std::string> AuthStringField(
+    const jsonlite::Value* tokens,
+    const jsonlite::Value& root,
+    const char* key) {
+    if (auto nested = JsonStringField(tokens, key); nested.has_value()) {
+        return nested;
+    }
+    return JsonStringField(&root, key);
 }
 
 // Refresh one day before JWT exp (also covers already-expired tokens).
@@ -867,7 +902,7 @@ TokenRefreshResult CodexUsageFetcher::ForceRefreshAuthTokens() const {
         return result;
     }
     if (credentials->refreshToken.empty()) {
-        result.errorMessage = L"auth.json missing tokens.refresh_token";
+        result.errorMessage = L"auth.json missing refresh_token";
         return result;
     }
 
@@ -1023,38 +1058,40 @@ std::optional<CodexUsageFetcher::AuthCredentials> CodexUsageFetcher::ReadAuthCre
     }
 
     const jsonlite::Value* tokens = root->Find("tokens");
-    const jsonlite::Value* accessToken = tokens != nullptr ? tokens->Find("access_token") : nullptr;
-    auto token = accessToken != nullptr ? accessToken->AsString() : std::nullopt;
-    if (!token.has_value() || token->empty()) {
+    if (tokens != nullptr && !tokens->IsObject()) {
+        tokens = nullptr;
+    }
+
+    // Flat CPA files identify the provider. Native Codex files omit "type".
+    if (tokens == nullptr) {
+        if (auto type = JsonStringField(&*root, "type"); type.has_value() && *type != "codex") {
+            if (errorMessage != nullptr) {
+                *errorMessage = L"auth.json type is not codex";
+            }
+            return std::nullopt;
+        }
+    }
+
+    auto token = AuthStringField(tokens, *root, "access_token");
+    if (!token.has_value()) {
         if (errorMessage != nullptr) {
-            *errorMessage = L"auth.json missing tokens.access_token";
+            *errorMessage = L"auth.json missing access_token";
         }
         return std::nullopt;
     }
 
     AuthCredentials credentials;
     credentials.authPath = authPath;
-    credentials.accessToken = std::string(*token);
+    credentials.accessToken = std::move(*token);
 
-    const jsonlite::Value* accountIdNode = tokens != nullptr ? tokens->Find("account_id") : nullptr;
-    if (accountIdNode == nullptr) {
-        accountIdNode = root->Find("account_id");
+    if (auto accountId = AuthStringField(tokens, *root, "account_id"); accountId.has_value()) {
+        credentials.accountId = std::move(*accountId);
     }
-    if (auto accountId = accountIdNode != nullptr ? accountIdNode->AsString() : std::nullopt;
-        accountId.has_value()) {
-        credentials.accountId = std::string(*accountId);
+    if (auto idToken = AuthStringField(tokens, *root, "id_token"); idToken.has_value()) {
+        credentials.idToken = std::move(*idToken);
     }
-
-    const jsonlite::Value* idTokenNode = tokens != nullptr ? tokens->Find("id_token") : nullptr;
-    if (auto idToken = idTokenNode != nullptr ? idTokenNode->AsString() : std::nullopt;
-        idToken.has_value()) {
-        credentials.idToken = std::string(*idToken);
-    }
-
-    const jsonlite::Value* refreshTokenNode = tokens != nullptr ? tokens->Find("refresh_token") : nullptr;
-    if (auto refreshToken = refreshTokenNode != nullptr ? refreshTokenNode->AsString() : std::nullopt;
-        refreshToken.has_value()) {
-        credentials.refreshToken = std::string(*refreshToken);
+    if (auto refreshToken = AuthStringField(tokens, *root, "refresh_token"); refreshToken.has_value()) {
+        credentials.refreshToken = std::move(*refreshToken);
     }
 
     return credentials;
@@ -1149,6 +1186,13 @@ bool CodexUsageFetcher::PersistAuthCredentials(
     }
     if (!credentials.refreshToken.empty()) {
         changed = ReplaceJsonStringField(&updated, "refresh_token", credentials.refreshToken) || changed;
+    }
+    // CPA export keeps access-token expiry in root "expired". Native files omit it.
+    if (auto exp = JwtExpUnixSeconds(credentials.accessToken); exp.has_value()) {
+        const std::string expired = UnixToUtcIso8601(*exp);
+        if (!expired.empty()) {
+            ReplaceJsonStringField(&updated, "expired", expired);
+        }
     }
     // last_refresh may be ISO string at root.
     if (!ReplaceJsonStringField(&updated, "last_refresh", CurrentUtcIso8601())) {

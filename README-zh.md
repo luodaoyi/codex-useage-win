@@ -39,6 +39,7 @@
 - 原生 `Win32 + Direct2D + DirectWrite + WinHTTP`
 - 无 `C#`、无 `WebView`
 - 优先读取可执行文件同目录的 `auth.json`，否则读取 `%USERPROFILE%\.codex\auth.json` 或 `%CODEX_HOME%\auth.json`
+- 同时接受 Codex 原生（`tokens.access_token`）和 CPA 导出的扁平文件（顶层 `access_token` / `id_token` / `refresh_token`，`type` 为 `codex`）
 - 请求 `GET https://chatgpt.com/backend-api/wham/usage`
 - 支持通过环境变量配置请求级 HTTP(S) 代理（不改系统全局代理）
 - 三种显示模式：
@@ -175,7 +176,7 @@ git push origin v0.1.0
 
 ## 已知限制
 
-- 当前只使用 `auth.json` 中现有的 `access_token`，还没做 `refresh_token` 自动续期
+- 临近过期或遇到 401/403 时会用 `refresh_token` 续期，并写回当前这份 `auth.json`
 - 如果 OpenAI 后端接口字段变化，需要同步调整解析逻辑
 - 当前是桌面浮层挂件，不是 Windows 7 时代的官方 Gadget 平台
 

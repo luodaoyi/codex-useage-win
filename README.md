@@ -39,6 +39,7 @@ The widget reads usage limits from the current Codex account and displays them i
 - Native `Win32 + Direct2D + DirectWrite + WinHTTP`
 - No `C#`, no `WebView`
 - Prefers `auth.json` next to the executable, otherwise `%USERPROFILE%\.codex\auth.json` or `%CODEX_HOME%\auth.json`
+- Accepts both native Codex auth (`tokens.access_token`) and a flat CPA export (`access_token` / `id_token` / `refresh_token` at the root, `type` = `codex`)
 - Requests `GET https://chatgpt.com/backend-api/wham/usage`
 - Optional request-level HTTP(S) proxy via env vars (does not change the system proxy)
 - Three display modes:
@@ -177,7 +178,7 @@ If the default branch is `main`, replace `master` with `main`.
 
 ## Known Limitations
 
-- It currently relies on the existing `access_token` in `auth.json`; automatic refresh via `refresh_token` is not implemented
+- Near expiry, or on HTTP 401/403, it refreshes with `refresh_token` and writes the new tokens back to that same `auth.json`
 - If the OpenAI backend response changes, the parser must be updated accordingly
 - This is a desktop overlay widget, not the legacy Windows Gadget platform
 

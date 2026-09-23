@@ -1,5 +1,6 @@
 build/
 build-vs/
+auth.json
 artifacts/
 *.obj
 *.exe
