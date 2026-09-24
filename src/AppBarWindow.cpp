@@ -1,5 +1,7 @@
 #include "AppBarWindow.h"
 #include "AppVersion.h"
+#include "BrowserSignIn.h"
+#include "TextUtil.h"
 
 #include <commdlg.h>
 #include <ShlObj.h>
@@ -8,6 +10,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -47,6 +50,44 @@ constexpr UINT kCommandModelScoresSoftware = 20;
 constexpr UINT kCommandModelScoresVisual = 21;
 constexpr UINT kCommandResetCredit = 22;
 constexpr UINT kCommandImportAccount = 23;
+constexpr UINT kCommandPasteImport = 24;
+constexpr UINT kCommandAlias = 25;
+constexpr UINT kCommandMoveUp = 26;
+constexpr UINT kCommandMoveDown = 27;
+constexpr UINT kCommandDeleteAccount = 28;
+constexpr UINT kCommandResetStatusToggle = 29;
+constexpr UINT kCommandEstimateToggle = 30;
+constexpr UINT kCommandDetailOff = 31;
+constexpr UINT kCommandDetailChart = 32;
+constexpr UINT kCommandDetailSessions = 33;
+constexpr UINT kCommandRepairSessions = 34;
+constexpr UINT kCommandChartHeat = 35;
+constexpr UINT kCommandChartLine = 36;
+constexpr UINT kCommandChartBar = 37;
+constexpr UINT kCommandProviderCodex = 38;
+constexpr UINT kCommandProviderGrok = 39;
+constexpr UINT kCommandBrowserLogin = 40;
+constexpr UINT kCommandProxySystem = 44;
+constexpr UINT kCommandProxyHttp = 45;
+constexpr UINT kCommandProxySocks = 46;
+constexpr UINT kCommandProxyEdit = 47;
+constexpr UINT kCommandProxyTest = 48;
+constexpr UINT kCommandDownloadUpdate = 49;
+constexpr UINT kCommandRangeToday = 50;
+constexpr UINT kCommandRangeCycle = 51;
+constexpr UINT kCommandRangePrev = 52;
+constexpr UINT kCommandRangeMonth = 53;
+constexpr UINT kCommandLanguageTraditional = 60;
+constexpr UINT kCommandLanguageKorean = 61;
+constexpr UINT kCommandLanguageJapanese = 62;
+constexpr UINT kCommandLanguageRussian = 63;
+constexpr UINT kCommandLanguageFrench = 64;
+constexpr UINT kCommandCloseMenu = 70;
+constexpr UINT kUiSettings = 80;
+constexpr UINT kUiAccounts = 81;
+constexpr UINT kUiCloseSheet = 82;
+constexpr UINT kUiPrevAccount = 83;
+constexpr UINT kUiNextAccount = 84;
 constexpr UINT kCommandAccountBase = 1000;
 constexpr UINT kMaxAuthMenuAccounts = 64;
 constexpr int kModelScoresPageSize = 10;
@@ -282,6 +323,15 @@ AppBarWindow::~AppBarWindow() {
 bool AppBarWindow::Create() {
     RegisterWindowClass();
     LoadSettings();
+    LoadFeatureSettings();
+    accounts_.ImportSiblingAuthFiles();
+    for (const AccountEntry& account : accounts_.List(L"")) {
+        if (_wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0 && !account.provider.empty()) {
+            provider_ = account.provider;
+            SaveFeatureSettings();
+            break;
+        }
+    }
     hwnd_ = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         kWindowClassName,
@@ -319,6 +369,10 @@ bool AppBarWindow::Create() {
     if (showModelScores_) {
         RestartModelScoresTimer();
         RequestModelScoresRefresh(true);
+    }
+    if (resetStatusEnabled_) {
+        SetTimer(hwnd_, kResetStatusTimerId, static_cast<UINT>(resetStatusIntervalSeconds_ * 1000), nullptr);
+        RequestResetStatus();
     }
     return true;
 }
@@ -371,6 +425,8 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 InvalidateRect(hwnd_, nullptr, FALSE);
             } else if (wParam == kModelScoresTimerId) {
                 RequestModelScoresRefresh(false);
+            } else if (wParam == kResetStatusTimerId) {
+                RequestResetStatus();
             }
             return 0;
 
@@ -501,12 +557,66 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             OnModelScoresUpdated(reinterpret_cast<ModelIqSnapshot*>(lParam));
             return 0;
 
+        case kBrowserDoneMessage: {
+            std::unique_ptr<BrowserSignInResult> result(reinterpret_cast<BrowserSignInResult*>(lParam));
+            browserSignInInFlight_ = false;
+            if (result != nullptr && result->success) {
+                activeAuthId_ = result->accountId;
+                SaveActiveAuth();
+                RequestRefresh(true);
+            } else {
+                resetCreditActionMessage_ = result != nullptr ? result->error : L"browser login failed";
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case kResetStatusMessage: {
+            std::unique_ptr<ResetStatusInfo> result(reinterpret_cast<ResetStatusInfo*>(lParam));
+            resetStatusInFlight_ = false;
+            if (result != nullptr) {
+                if (result->success) {
+                    resetStatus_ = *result;
+                } else if (!result->error.empty()) {
+                    resetStatus_.error = result->error;
+                }
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        case kGrokUpdatedMessage: {
+            std::unique_ptr<GrokSnapshot> result(reinterpret_cast<GrokSnapshot*>(lParam));
+            grokInFlight_ = false;
+            refreshInFlight_ = false;
+            if (provider_ == L"grok" && result != nullptr) {
+                grok_ = *result;
+            }
+            if (!taskbarMode_) {
+                FitWindowToContent();
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        case kSessionScanMessage: {
+            std::unique_ptr<SessionScan> result(reinterpret_cast<SessionScan*>(lParam));
+            sessionScanInFlight_ = false;
+            if (result != nullptr) {
+                sessionScan_ = *result;
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
         case WM_DESTROY:
             KillTimer(hwnd_, kCountdownTimerId);
             KillTimer(hwnd_, kRefreshTimerId);
             KillTimer(hwnd_, kResetConfirmTimerId);
             KillTimer(hwnd_, kModelScoresTimerId);
+            KillTimer(hwnd_, kResetStatusTimerId);
             SaveSettings();
+            SaveFeatureSettings();
             DiscardTextFormats();
             DiscardDeviceResources();
             PostQuitMessage(0);
@@ -582,6 +692,17 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
     if (taskbarMode_) {
         return CalculateTaskbarWidgetHeight(hwnd_);
     }
+    const int chrome = ScaleForDpi(hwnd_, 78);
+    const int dropExtra = accountDropOpen_
+        ? ScaleForDpi(hwnd_, 8 + 32 * std::max(1, static_cast<int>(accounts_.List(provider_).size())))
+        : 0;
+    if (surface_ == Surface::Settings) {
+        return chrome + ScaleForDpi(hwnd_, 720) + dropExtra;
+    }
+    if (surface_ == Surface::Accounts) {
+        const int count = static_cast<int>(accounts_.List(provider_).size());
+        return chrome + ScaleForDpi(hwnd_, 150 + count * 40);
+    }
     int height = 0;
     if (simpleMode_) {
         height = CalculateSimpleMinimumWidgetHeight(hwnd_);
@@ -599,6 +720,11 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
         height = std::max(height, ScaleForDpi(hwnd_, 164));
     }
     height += GetModelScoresPanelHeight();
+    height += ExtraFeatureHeight();
+    height += chrome + dropExtra;
+    if (provider_ == L"grok") {
+        height += ScaleForDpi(hwnd_, 96);
+    }
     return height;
 }
 
@@ -608,6 +734,7 @@ void AppBarWindow::SetLanguage(Language language) {
     }
 
     language_ = language;
+    SaveFeatureSettings();
     if (hwnd_ != nullptr) {
         SetWindowTextW(hwnd_, LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"));
         InvalidateRect(hwnd_, nullptr, TRUE);
@@ -1057,9 +1184,8 @@ void AppBarWindow::LoadSettings() {
     refreshIntervalSeconds_ = SanitizeRefreshIntervalSeconds(
         GetPrivateProfileIntW(L"layout", L"refresh_interval_seconds", 60, path.c_str()));
     refreshCountdownSeconds_ = refreshIntervalSeconds_;
-    language_ = GetPrivateProfileIntW(L"layout", L"language", 0, path.c_str()) == 1
-        ? Language::Chinese
-        : Language::English;
+    const int languageValue = GetPrivateProfileIntW(L"layout", L"language", 0, path.c_str());
+    language_ = languageValue == 1 ? Language::Chinese : Language::English;
     if (version < kLayoutVersion) {
         hasSavedRect_ = false;
         return;
@@ -1105,7 +1231,7 @@ void AppBarWindow::SaveSettings() const {
     }
     WritePrivateProfileStringW(L"layout", L"model_score_families", familyList.c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"refresh_interval_seconds", std::to_wstring(refreshIntervalSeconds_).c_str(), path.c_str());
-    WritePrivateProfileStringW(L"layout", L"language", language_ == Language::Chinese ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"layout", L"language", std::to_wstring(static_cast<int>(language_)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"x", std::to_wstring(savedRect_.left).c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"y", std::to_wstring(savedRect_.top).c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"width", std::to_wstring(RectWidth(savedRect_)).c_str(), path.c_str());
@@ -1126,16 +1252,29 @@ void AppBarWindow::SaveActiveAuth() const {
 }
 
 std::wstring AppBarWindow::ActiveAuthPath() const {
-    return fetcher_.ResolveActiveAuthPath(activeAuthId_);
+    const std::vector<AccountEntry> accounts = accounts_.List(L"");
+    if (!activeAuthId_.empty()) {
+        for (const AccountEntry& account : accounts) {
+            if (_wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0) {
+                return account.path;
+            }
+        }
+    }
+    for (const AccountEntry& account : accounts) {
+        if (account.provider == provider_) {
+            return account.path;
+        }
+    }
+    return {};
 }
 
-bool AppBarWindow::IsActiveAuth(const CodexUsageFetcher::AuthAccount& account) const {
+bool AppBarWindow::IsActiveAuth(const AccountEntry& account) const {
     if (authMenuAccounts_.empty()) {
         return false;
     }
-    const CodexUsageFetcher::AuthAccount* selected = &authMenuAccounts_.front();
+    const AccountEntry* selected = &authMenuAccounts_.front();
     if (!activeAuthId_.empty()) {
-        for (const CodexUsageFetcher::AuthAccount& item : authMenuAccounts_) {
+        for (const AccountEntry& item : authMenuAccounts_) {
             if (_wcsicmp(item.id.c_str(), activeAuthId_.c_str()) == 0) {
                 selected = &item;
                 break;
@@ -1415,6 +1554,11 @@ void AppBarWindow::RequestRefresh(bool force) {
 
     refreshCountdownSeconds_ = refreshIntervalSeconds_;
     RestartRefreshTimer();
+    if (provider_ == L"grok") {
+        refreshInFlight_ = false;
+        RequestGrokRefresh();
+        return;
+    }
 
     const HWND target = hwnd_;
     const std::wstring authPath = ActiveAuthPath();
@@ -1431,6 +1575,14 @@ void AppBarWindow::OnUsageUpdated(UsageSnapshot* snapshot) {
     if (inflightAuthId_ != activeAuthId_) {
         RequestRefresh(true);
         return;
+    }
+    if (snapshot != nullptr && snapshot->success && estimateEnabled_ && snapshot->weekly.available) {
+        estimate_ = RecordWeeklyEstimate(
+            std::filesystem::path(GetSettingsPath()).parent_path() / L"quota-estimate-history.json",
+            snapshot->weekly.usedPercent,
+            false,
+            0,
+            true);
     }
     if (snapshot != nullptr) {
         snapshot_ = *snapshot;
@@ -1530,6 +1682,53 @@ std::wstring AppBarWindow::BuildResetCreditsExpiryText() const {
 }
 
 bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
+    if (!taskbarMode_) {
+        for (const UiHit& hit : uiHits_) {
+            if (hit.rect.right <= hit.rect.left || !PtInRect(&hit.rect, clientPoint)) {
+                continue;
+            }
+            if (!hit.accountId.empty()) {
+                for (const AccountEntry& account : accounts_.List(L"")) {
+                    if (_wcsicmp(account.id.c_str(), hit.accountId.c_str()) != 0) {
+                        continue;
+                    }
+                    provider_ = account.provider.empty() ? L"codex" : account.provider;
+                    activeAuthId_ = account.id;
+                    surface_ = Surface::Usage;
+                    accountDropOpen_ = false;
+                    SaveActiveAuth();
+                    SaveFeatureSettings();
+                    snapshot_ = {};
+                    grok_ = {};
+                    RequestRefresh(true);
+                    break;
+                }
+            } else if (hit.command == kUiSettings) {
+                accountDropOpen_ = false;
+                surface_ = surface_ == Surface::Settings ? Surface::Usage : Surface::Settings;
+            } else if (hit.command == kUiAccounts) {
+                accountDropOpen_ = !accountDropOpen_;
+            } else if (hit.command == kUiCloseSheet) {
+                surface_ = Surface::Usage;
+            } else {
+                if (hit.command == kCommandProviderCodex || hit.command == kCommandProviderGrok) {
+                    surface_ = Surface::Usage;
+                    accountDropOpen_ = false;
+                }
+                HandleMenuCommand(hit.command);
+            }
+            FitWindowToContent();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return true;
+        }
+        if (accountDropOpen_) {
+            accountDropOpen_ = false;
+            FitWindowToContent();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return true;
+        }
+    }
+
     if (taskbarMode_) {
         return false;
     }
@@ -1560,6 +1759,11 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
             ShellExecuteW(hwnd_, L"open", L"https://codexradar.com/", nullptr, nullptr, SW_SHOWNORMAL);
             return true;
         }
+    }
+
+    if (resetLinkRect_.right > resetLinkRect_.left && PtInRect(&resetLinkRect_, clientPoint) && !resetStatus_.url.empty()) {
+        ShellExecuteW(hwnd_, L"open", resetStatus_.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return true;
     }
 
     if (refreshButtonRect_.right > refreshButtonRect_.left && PtInRect(&refreshButtonRect_, clientPoint)) {
@@ -1666,16 +1870,16 @@ void AppBarWindow::ImportAccount() {
         return;
     }
 
-    const CodexUsageFetcher::AuthImportResult imported = fetcher_.ImportAuthFile(file);
+    const AccountOpResult imported = accounts_.ImportFile(file, provider_);
     if (!imported.success) {
-        resetCreditActionMessage_ = imported.errorMessage.empty()
+        resetCreditActionMessage_ = imported.error.empty()
             ? std::wstring(LocalizeText(L"Failed to import account", L"导入账号失败"))
-            : imported.errorMessage;
+            : imported.error;
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
 
-    activeAuthId_ = imported.authId;
+    activeAuthId_ = imported.id;
     SaveActiveAuth();
     resetCreditConfirmStep_ = 0;
     KillTimer(hwnd_, kResetConfirmTimerId);
@@ -1778,6 +1982,8 @@ void AppBarWindow::SetModelScoreMode(bool enabled, RadarMetricKind kind) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+static long long Iso8601ToUnix(const std::wstring& text);
+
 void AppBarWindow::Paint(HDC hdc) {
     RECT clientRect = {};
     GetClientRect(hwnd_, &clientRect);
@@ -1803,14 +2009,70 @@ void AppBarWindow::Paint(HDC hdc) {
 
     renderTarget_->BeginDraw();
     PaintContent(clientRect);
+    DrawAccountDropdown();
     const HRESULT hr = renderTarget_->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
     }
 }
 
-void AppBarWindow::PaintContent(const RECT& clientRect) {
+void AppBarWindow::DrawAccountDropdown() {
+    if (!accountDropOpen_ || taskbarMode_ || accountDropRect_.right <= accountDropRect_.left) {
+        return;
+    }
+    const std::vector<AccountEntry> accounts = accounts_.List(provider_);
+    const int rowH = ScaleForDpi(hwnd_, 32);
+    const int gap = ScaleForDpi(hwnd_, 4);
+    int top = accountDropRect_.bottom + gap;
+    const COLORREF panel = lightTheme_ ? RGB(255, 255, 255) : RGB(28, 34, 31);
+    const COLORREF ink = lightTheme_ ? RGB(21, 27, 24) : RGB(240, 244, 241);
+    const COLORREF muted = lightTheme_ ? RGB(94, 106, 97) : RGB(167, 178, 171);
+    const COLORREF line = lightTheme_ ? RGB(219, 224, 220) : RGB(57, 66, 60);
+    const COLORREF selectedFill = lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46);
+    const int count = std::max(1, static_cast<int>(accounts.size()));
+    RECT frame = MakeRect(accountDropRect_.left, top, accountDropRect_.right, top + count * rowH);
+    solidBrush_->SetColor(ToColorF(panel));
+    renderTarget_->FillRectangle(ToRectF(frame), solidBrush_.Get());
+    solidBrush_->SetColor(ToColorF(line));
+    renderTarget_->DrawRectangle(ToRectF(frame), solidBrush_.Get(), 1.0f);
+    auto drawRow = [&](const RECT& row, const std::wstring& text, bool selected, const std::wstring& accountId) {
+        if (selected) {
+            solidBrush_->SetColor(ToColorF(selectedFill));
+            renderTarget_->FillRectangle(ToRectF(row), solidBrush_.Get());
+        }
+        textFormatFoot_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        textFormatFoot_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        textFormatFoot_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        if (SUCCEEDED(dwriteFactory_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), textFormatFoot_.Get(),
+                std::max(1.0f, static_cast<float>(RectWidth(row) - ScaleForDpi(hwnd_, 16))),
+                std::max(1.0f, static_cast<float>(rowH)), layout.GetAddressOf()))) {
+            solidBrush_->SetColor(ToColorF(selected ? ink : muted));
+            renderTarget_->DrawTextLayout(
+                D2D1::Point2F(static_cast<float>(row.left + ScaleForDpi(hwnd_, 12)), static_cast<float>(row.top)),
+                layout.Get(), solidBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+        UiHit hit;
+        hit.rect = row;
+        hit.accountId = accountId;
+        uiHits_.insert(uiHits_.begin(), std::move(hit));
+    };
+    if (accounts.empty()) {
+        drawRow(frame, LocalizeText(L"Import an account in Settings", L"请在设置里导入账号"), false, L"");
+        return;
+    }
+    for (const AccountEntry& account : accounts) {
+        const RECT row = MakeRect(accountDropRect_.left, top, accountDropRect_.right, top + rowH);
+        const bool selected = _wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0;
+        drawRow(row, account.label, selected, account.id);
+        top += rowH;
+    }
+}
+
+void AppBarWindow::PaintContent(const RECT& outerRect) {
+    RECT clientRect = outerRect;
     refreshButtonRect_ = {};
+    uiHits_.clear();
     modelScoresPrevRect_ = {};
     modelScoresNextRect_ = {};
     modelScoresSourceRect_ = {};
@@ -2199,7 +2461,214 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         return;
     }
 
-    if (simpleMode_) {
+    if (!taskbarMode_) {
+        fillRect(clientRect, background);
+        drawRectBorder(clientRect, border);
+        const int chromeH = ScaleForDpi(hwnd_, 78);
+        const int rowH = ScaleForDpi(hwnd_, 28);
+        const int gap = ScaleForDpi(hwnd_, 6);
+        const int left = clientRect.left + ScaleForDpi(hwnd_, 14);
+        const int right = clientRect.right - ScaleForDpi(hwnd_, 14);
+        const int row1 = clientRect.top + ScaleForDpi(hwnd_, 10);
+        const int row2 = row1 + rowH + gap;
+        auto addHit = [&](const RECT& rect, UINT command, const std::wstring& accountId = L"") {
+            UiHit hit;
+            hit.rect = rect;
+            hit.command = command;
+            hit.accountId = accountId;
+            uiHits_.push_back(std::move(hit));
+        };
+        auto chip = [&](RECT rect, const std::wstring& text, bool selected, UINT command) {
+            fillRect(rect, selected ? (lightTheme_ ? RGB(21, 27, 24) : RGB(236, 240, 236)) : trackColor);
+            drawTextBlock(textFormatFoot_.Get(), text, rect, selected ? (lightTheme_ ? RGB(248, 249, 248) : RGB(21, 27, 24)) : textPrimary,
+                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            addHit(rect, command);
+        };
+        RECT codexTab = MakeRect(left, row1, left + ScaleForDpi(hwnd_, 78), row1 + rowH);
+        RECT grokTab = MakeRect(codexTab.right + gap, row1, codexTab.right + gap + ScaleForDpi(hwnd_, 72), row1 + rowH);
+        chip(codexTab, L"Codex", provider_ == L"codex" && surface_ != Surface::Settings, kCommandProviderCodex);
+        chip(grokTab, L"Grok", provider_ == L"grok" && surface_ != Surface::Settings, kCommandProviderGrok);
+        RECT settingsRect = MakeRect(right - ScaleForDpi(hwnd_, 118), row1, right - ScaleForDpi(hwnd_, 58), row1 + rowH);
+        RECT refreshRect = MakeRect(right - ScaleForDpi(hwnd_, 52), row1, right, row1 + rowH);
+        chip(settingsRect, surface_ == Surface::Settings ? LocalizeText(L"Done", L"完成") : LocalizeText(L"Settings", L"设置"), surface_ == Surface::Settings, kUiSettings);
+        chip(refreshRect, LocalizeText(L"Reload", L"刷新"), false, kCommandRefresh);
+        const std::vector<AccountEntry> providerAccounts = accounts_.List(provider_);
+        std::wstring accountLabel = LocalizeText(L"Import an account", L"导入账号");
+        for (const AccountEntry& account : providerAccounts) {
+            if (activeAuthId_.empty() || _wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0) {
+                accountLabel = account.label;
+                break;
+            }
+        }
+        accountDropRect_ = MakeRect(left, row2, right, row2 + rowH);
+        fillRect(accountDropRect_, accountDropOpen_
+            ? (lightTheme_ ? RGB(232, 236, 233) : RGB(46, 54, 49))
+            : (lightTheme_ ? RGB(244, 246, 243) : RGB(36, 42, 38)));
+        drawRectBorder(accountDropRect_, border);
+        RECT labelRect = accountDropRect_;
+        labelRect.left += ScaleForDpi(hwnd_, 12);
+        labelRect.right -= ScaleForDpi(hwnd_, 28);
+        drawTextBlock(textFormatFoot_.Get(), accountLabel, labelRect, textPrimary,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        RECT chevronRect = MakeRect(accountDropRect_.right - ScaleForDpi(hwnd_, 28), row2, accountDropRect_.right, row2 + rowH);
+        drawTextBlock(textFormatFoot_.Get(), accountDropOpen_ ? L"^" : L"v", chevronRect, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+        addHit(accountDropRect_, kUiAccounts);
+        clientRect.top += chromeH;
+        if (surface_ != Surface::Usage) {
+            fillRect(clientRect, background);
+            int y = clientRect.top + ScaleForDpi(hwnd_, 8);
+            const int chipH = ScaleForDpi(hwnd_, 28);
+            auto wrapChips = [&](std::vector<std::pair<std::wstring, UINT>> items, auto selected) {
+                int x = left;
+                for (const auto& item : items) {
+                    const int w = std::max(ScaleForDpi(hwnd_, 64), static_cast<int>(measureTextWidth(textFormatFoot_.Get(), item.first)) + ScaleForDpi(hwnd_, 22));
+                    if (x + w > right) {
+                        x = left;
+                        y += chipH + gap;
+                    }
+                    chip(MakeRect(x, y, x + w, y + chipH), item.first, selected(item.second), item.second);
+                    x += w + gap;
+                }
+                y += chipH + ScaleForDpi(hwnd_, 14);
+            };
+            auto section = [&](const wchar_t* title) {
+                RECT titleRect = MakeRect(left, y, right, y + ScaleForDpi(hwnd_, 18));
+                drawTextBlock(textFormatFoot_.Get(), title, titleRect, textSecondary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                y += ScaleForDpi(hwnd_, 22);
+            };
+            if (surface_ == Surface::Accounts) {
+                section(provider_ == L"grok" ? L"Grok" : L"Codex");
+                if (providerAccounts.empty()) {
+                    RECT empty = MakeRect(left, y, right, y + chipH);
+                    drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"No account in this provider yet", L"这个服务还没有账号"), empty, textSecondary,
+                        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                    y += chipH + gap;
+                }
+                for (const AccountEntry& account : providerAccounts) {
+                    const bool selected = _wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0;
+                    RECT row = MakeRect(left, y, right, y + ScaleForDpi(hwnd_, 34));
+                    fillRect(row, selected ? (lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46)) : trackColor);
+                    drawTextBlock(textFormatFoot_.Get(), (selected ? L"● " : L"") + account.label, row, textPrimary,
+                        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                    addHit(row, 0, account.id);
+                    y += ScaleForDpi(hwnd_, 40);
+                }
+                wrapChips({
+                    {LocalizeText(L"Import", L"导入文件"), kCommandImportAccount},
+                    {LocalizeText(L"Paste", L"粘贴"), kCommandPasteImport},
+                    {LocalizeText(L"Browser", L"浏览器登录"), kCommandBrowserLogin},
+                    {LocalizeText(L"Rename", L"重命名"), kCommandAlias},
+                    {LocalizeText(L"Delete", L"删除"), kCommandDeleteAccount},
+                }, [](UINT) { return false; });
+            } else {
+                section(LocalizeText(L"Account", L"账号"));
+                wrapChips({
+                    {LocalizeText(L"Import", L"导入文件"), kCommandImportAccount},
+                    {LocalizeText(L"Paste", L"粘贴"), kCommandPasteImport},
+                    {LocalizeText(L"Browser", L"浏览器登录"), kCommandBrowserLogin},
+                    {LocalizeText(L"Rename", L"重命名"), kCommandAlias},
+                    {LocalizeText(L"Delete", L"删除"), kCommandDeleteAccount},
+                }, [](UINT) { return false; });
+                section(LocalizeText(L"Display", L"显示"));
+                wrapChips({
+                    {LocalizeText(L"Full", L"完整"), kCommandFullMode},
+                    {LocalizeText(L"Simple", L"简单"), kCommandSimpleMode},
+                    {LocalizeText(L"Taskbar", L"任务栏"), kCommandTaskbarMode},
+                }, [&](UINT command) {
+                    return (command == kCommandFullMode && !simpleMode_ && !taskbarMode_)
+                        || (command == kCommandSimpleMode && simpleMode_)
+                        || (command == kCommandTaskbarMode && taskbarMode_);
+                });
+                section(LocalizeText(L"Language", L"语言"));
+                wrapChips({
+                    {L"EN", kCommandLanguageEnglish},
+                    {L"简", kCommandLanguageChinese},
+                    {L"繁", kCommandLanguageTraditional},
+                    {L"한", kCommandLanguageKorean},
+                    {L"日", kCommandLanguageJapanese},
+                    {L"RU", kCommandLanguageRussian},
+                    {L"FR", kCommandLanguageFrench},
+                }, [&](UINT command) {
+                    return (command == kCommandLanguageEnglish && language_ == Language::English)
+                        || (command == kCommandLanguageChinese && language_ == Language::Chinese)
+                        || (command == kCommandLanguageTraditional && language_ == Language::Traditional)
+                        || (command == kCommandLanguageKorean && language_ == Language::Korean)
+                        || (command == kCommandLanguageJapanese && language_ == Language::Japanese)
+                        || (command == kCommandLanguageRussian && language_ == Language::Russian)
+                        || (command == kCommandLanguageFrench && language_ == Language::French);
+                });
+                section(LocalizeText(L"Refresh", L"刷新"));
+                wrapChips({
+                    {L"1m", kCommandRefreshInterval1Minute},
+                    {L"3m", kCommandRefreshInterval3Minutes},
+                    {L"5m", kCommandRefreshInterval5Minutes},
+                    {L"10m", kCommandRefreshInterval10Minutes},
+                    {L"30m", kCommandRefreshInterval30Minutes},
+                }, [&](UINT command) {
+                    return (command == kCommandRefreshInterval1Minute && refreshIntervalSeconds_ == 60)
+                        || (command == kCommandRefreshInterval3Minutes && refreshIntervalSeconds_ == 180)
+                        || (command == kCommandRefreshInterval5Minutes && refreshIntervalSeconds_ == 300)
+                        || (command == kCommandRefreshInterval10Minutes && refreshIntervalSeconds_ == 600)
+                        || (command == kCommandRefreshInterval30Minutes && refreshIntervalSeconds_ == 1800);
+                });
+                section(LocalizeText(L"Switches", L"开关"));
+                wrapChips({
+                    {LocalizeText(L"Reset news", L"重置公告"), kCommandResetStatusToggle},
+                    {LocalizeText(L"Estimate", L"周估算"), kCommandEstimateToggle},
+                    {LocalizeText(L"On top", L"置顶"), kCommandAlwaysOnTop},
+                    {LocalizeText(L"Lock", L"锁定"), kCommandLockPosition},
+                    {LocalizeText(L"Startup", L"开机启动"), kCommandLaunchAtStartup},
+                }, [&](UINT command) {
+                    return (command == kCommandResetStatusToggle && resetStatusEnabled_)
+                        || (command == kCommandEstimateToggle && estimateEnabled_)
+                        || (command == kCommandAlwaysOnTop && alwaysOnTop_)
+                        || (command == kCommandLockPosition && lockPosition_)
+                        || (command == kCommandLaunchAtStartup && IsLaunchAtStartupEnabled());
+                });
+                section(LocalizeText(L"Proxy", L"代理"));
+                wrapChips({
+                    {LocalizeText(L"System", L"系统"), kCommandProxySystem},
+                    {L"HTTP", kCommandProxyHttp},
+                    {L"SOCKS5", kCommandProxySocks},
+                    {LocalizeText(L"Edit", L"编辑"), kCommandProxyEdit},
+                    {LocalizeText(L"Test", L"测试"), kCommandProxyTest},
+                }, [&](UINT command) {
+                    return (command == kCommandProxySystem && proxy_.mode == ProxyConfig::Mode::System)
+                        || (command == kCommandProxyHttp && proxy_.mode == ProxyConfig::Mode::Http)
+                        || (command == kCommandProxySocks && proxy_.mode == ProxyConfig::Mode::Socks5);
+                });
+                section(LocalizeText(L"Usage detail", L"用量"));
+                wrapChips({
+                    {LocalizeText(L"Hidden", L"隐藏"), kCommandDetailOff},
+                    {LocalizeText(L"Chart", L"图表"), kCommandDetailChart},
+                    {LocalizeText(L"Sessions", L"会话"), kCommandDetailSessions},
+                    {LocalizeText(L"Heat", L"热力"), kCommandChartHeat},
+                    {LocalizeText(L"Line", L"折线"), kCommandChartLine},
+                    {LocalizeText(L"Bar", L"柱状"), kCommandChartBar},
+                }, [&](UINT command) {
+                    return (command == kCommandDetailOff && featurePage_ == FeaturePage::None)
+                        || (command == kCommandDetailChart && featurePage_ == FeaturePage::Chart)
+                        || (command == kCommandDetailSessions && featurePage_ == FeaturePage::Sessions)
+                        || (command == kCommandChartHeat && chartKind_ == ChartKind::Heat)
+                        || (command == kCommandChartLine && chartKind_ == ChartKind::Line)
+                        || (command == kCommandChartBar && chartKind_ == ChartKind::Bar);
+                });
+                section(LocalizeText(L"Maintain", L"维护"));
+                wrapChips({
+                    {LocalizeText(L"Version", L"检查版本"), kCommandCheckVersion},
+                    {LocalizeText(L"Update", L"下载更新"), kCommandDownloadUpdate},
+                    {LocalizeText(L"Reset place", L"重置位置"), kCommandResetPosition},
+                    {LocalizeText(L"Exit", L"退出"), kCommandExit},
+                }, [](UINT) { return false; });
+            }
+            chip(MakeRect(left, y, left + ScaleForDpi(hwnd_, 120), y + chipH), LocalizeText(L"Back to usage", L"返回用量"), false, kUiCloseSheet);
+            return;
+        }
+    }
+
+    if (simpleMode_ && provider_ != L"grok") {
         fillRect(MakeRect(clientRect.left + 2, clientRect.top + 3, clientRect.right + 2, clientRect.bottom + 3), shadow);
         fillRect(clientRect, background);
         drawRectBorder(clientRect, border);
@@ -2319,6 +2788,88 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
     }
 
     // Full mode card layout (screenshot style, no Spark rows).
+    int y = clientRect.top + padY;
+    if (provider_ == L"grok") {
+        fillRect(MakeRect(clientRect.left + 2, clientRect.top + 3, clientRect.right + 2, clientRect.bottom + 3), shadow);
+        fillRect(clientRect, background);
+        drawRectBorder(clientRect, border);
+        RECT titleRect = MakeRect(clientRect.left + padX, clientRect.top + padY, clientRect.right - padX, clientRect.top + padY + ScaleForDpi(hwnd_, 24));
+        std::wstring grokTitle = L"Grok";
+        for (const AccountEntry& account : accounts_.List(L"grok")) {
+            if (_wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0 || activeAuthId_.empty()) {
+                grokTitle = L"Grok  " + account.label;
+                break;
+            }
+        }
+        drawTextBlock(textFormatMetricValue_.Get(), grokTitle, titleRect, textPrimary,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        y = titleRect.bottom + ScaleForDpi(hwnd_, 8);
+        if (!grok_.success) {
+            RECT errorRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 48));
+            drawTextBlock(textFormatFoot_.Get(),
+                grok_.error.empty() ? std::wstring(LocalizeText(L"Loading Grok usage", L"正在加载 Grok 用量")) : grok_.error,
+                errorRect, lightTheme_ ? RGB(196, 54, 32) : RGB(255, 144, 120),
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP, false);
+            y += ScaleForDpi(hwnd_, 52);
+        } else {
+        auto meter = [&](const std::wstring& label, int usedPercent) {
+            const int clamped = std::max(0, std::min(100, usedPercent));
+            RECT labelRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX - ScaleForDpi(hwnd_, 48), y + ScaleForDpi(hwnd_, 18));
+            RECT valueRect = MakeRect(labelRect.right, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 18));
+            drawTextBlock(textFormatFoot_.Get(), label, labelRect, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            drawTextBlock(textFormatFoot_.Get(), std::to_wstring(clamped) + L"%", valueRect, textPrimary,
+                DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+            y += ScaleForDpi(hwnd_, 20);
+            RECT track = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 10));
+            fillRect(track, trackColor);
+            RECT used = track;
+            used.right = used.left + RectWidth(track) * clamped / 100;
+            const COLORREF bar = clamped >= 100
+                ? (lightTheme_ ? RGB(196, 54, 32) : RGB(255, 144, 120))
+                : (clamped >= 85 ? (lightTheme_ ? RGB(184, 121, 38) : RGB(233, 180, 91))
+                                 : (lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163)));
+            if (used.right > used.left) {
+                fillRect(used, bar);
+            }
+            y += ScaleForDpi(hwnd_, 18);
+        };
+        if (grok_.hasUsagePercent) {
+            meter(LocalizeText(L"Week used", L"本周已用"), static_cast<int>(grok_.usagePercent));
+        }
+        for (const GrokProduct& product : grok_.products) {
+            if (!product.hasPercent) {
+                continue;
+            }
+            meter(product.name, static_cast<int>(product.usagePercent));
+        }
+        if (grok_.hasPrepaid || grok_.hasOnDemand) {
+            std::wstring extra;
+            if (grok_.hasPrepaid) {
+                extra += L"prepaid " + std::to_wstring(static_cast<int>(grok_.prepaidCents));
+            }
+            if (grok_.hasOnDemand) {
+                if (!extra.empty()) {
+                    extra += L"   ";
+                }
+                extra += L"on-demand " + std::to_wstring(static_cast<int>(grok_.onDemandCents));
+            }
+            RECT extraRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 18));
+            drawTextBlock(textFormatFoot_.Get(), extra, extraRect, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            y += ScaleForDpi(hwnd_, 20);
+        }
+        if (!grok_.periodEnd.empty()) {
+            const long long endUnix = Iso8601ToUnix(grok_.periodEnd);
+            const std::wstring endText = endUnix > 0 ? FormatFullDateTime(endUnix) : grok_.periodEnd;
+            RECT endRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 18));
+            drawTextBlock(textFormatFoot_.Get(), std::wstring(LocalizeText(L"Until ", L"到期 ")) + endText, endRect, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            y += ScaleForDpi(hwnd_, 22);
+        }
+        }
+    }
+    if (provider_ != L"grok") {
     fillRect(MakeRect(clientRect.left + 2, clientRect.top + 3, clientRect.right + 2, clientRect.bottom + 3), shadow);
     fillRect(clientRect, background);
     drawRectBorder(clientRect, border);
@@ -2351,6 +2902,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         drawTextBlock(textFormatFoot_.Get(), GetVersionStatusText(true), versionRect, updateAvailable_ ? heroValue : textSecondary,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
         return;
+    }
     }
 
     auto estimateExhaustAt = [&](const UsageWindow& window) -> long long {
@@ -2435,6 +2987,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         return rowHeight;
     };
 
+    if (provider_ != L"grok") {
     // Header: badge + email
     const int contentPadY = ScaleForDpi(hwnd_, 8);
     RECT badgeRect = MakeRect(clientRect.left + padX, clientRect.top + contentPadY,
@@ -2451,7 +3004,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
 
     // Plan row
-    int y = badgeRect.bottom + ScaleForDpi(hwnd_, 6);
+    y = badgeRect.bottom + ScaleForDpi(hwnd_, 6);
     RECT planLabelRect = MakeRect(clientRect.left + padX, y, clientRect.left + padX + ScaleForDpi(hwnd_, 32), y + ScaleForDpi(hwnd_, 16));
     drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Plan", L"套餐"), planLabelRect, textSecondary,
         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
@@ -2475,8 +3028,29 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
     drawTextBlock(textFormatFoot_.Get(), planDates, planDatesRect, textSecondary,
         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
 
-    // Reset credits inventory: header + one row per credit (screenshot style).
     y += ScaleForDpi(hwnd_, 18);
+    }
+    if (resetStatusEnabled_) {
+        const long long resetUnix = Iso8601ToUnix(resetStatus_.whenText);
+        const std::wstring resetWhen = resetUnix > 0 ? FormatFullDateTime(resetUnix) : resetStatus_.whenText;
+        const std::wstring resetLine = resetStatus_.success
+            ? (resetWhen + L"  " + resetStatus_.summary)
+            : (resetStatus_.error.empty() ? std::wstring(L"reset status") : resetStatus_.error);
+        resetLinkRect_ = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 16));
+        drawTextBlock(textFormatFoot_.Get(), resetLine, resetLinkRect_, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        y += ScaleForDpi(hwnd_, 18);
+    } else {
+        resetLinkRect_ = {};
+    }
+    if (estimateEnabled_) {
+        RECT estimateRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 16));
+        drawTextBlock(textFormatFoot_.Get(), estimate_.summary.empty() ? std::wstring(L"weekly estimate") : estimate_.summary, estimateRect, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        y += ScaleForDpi(hwnd_, 18);
+    }
+
+    // Reset credits inventory: header + one row per credit (screenshot style).
     const int creditCount = snapshot_.resetCredits.fetched
         ? static_cast<int>(snapshot_.resetCredits.availableCredits.size())
         : 0;
@@ -2544,7 +3118,7 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
 
     // Limit bars: hide lanes the API no longer returns (currently often weekly-only).
     y = creditBox.bottom + ScaleForDpi(hwnd_, 6);
-    if (snapshot_.fiveHour.available) {
+    if (provider_ != L"grok" && snapshot_.fiveHour.available) {
         y += drawUsageBar(
             y,
             LocalizeText(L"5-hour limit", L"5 小时限额"),
@@ -2552,12 +3126,57 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
             pace.fiveHourExpectedUsedPercent);
         y += ScaleForDpi(hwnd_, 4);
     }
-    if (snapshot_.weekly.available) {
+    if (provider_ != L"grok" && snapshot_.weekly.available) {
         y += drawUsageBar(
             y,
             LocalizeText(L"Weekly limit", L"周限额"),
             snapshot_.weekly,
             pace.expectedUsedPercent);
+    }
+
+    if (featurePage_ != FeaturePage::None) {
+        RECT panel = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 160));
+        fillRect(panel, lightTheme_ ? RGB(248, 249, 248) : RGB(28, 32, 30));
+        drawRectBorder(panel, border);
+        if (sessionScan_.daily.empty()) {
+            drawTextBlock(textFormatFoot_.Get(), sessionScan_.error.empty() ? LocalizeText(L"No local sessions", L"没有本机会话") : sessionScan_.error,
+                panel, textSecondary, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP, false);
+        } else if (featurePage_ == FeaturePage::Sessions) {
+            std::wstring lines;
+            for (const SessionRow& row : sessionScan_.recent) {
+                lines += Utf8ToWide(row.day) + L"  " + row.name + L"  " + row.model + L"  " + row.status + L"\n";
+            }
+            drawTextBlock(textFormatFoot_.Get(), lines, panel, textPrimary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP, false);
+        } else {
+            const int count = static_cast<int>(sessionScan_.daily.size());
+            long long maxTokens = 1;
+            for (const UsageBucket& bucket : sessionScan_.daily) {
+                maxTokens = std::max(maxTokens, bucket.tokens);
+            }
+            const int left = panel.left + ScaleForDpi(hwnd_, 8);
+            const int right = panel.right - ScaleForDpi(hwnd_, 8);
+            const int bottom = panel.bottom - ScaleForDpi(hwnd_, 16);
+            const int top = panel.top + ScaleForDpi(hwnd_, 16);
+            if (chartKind_ == ChartKind::Bar || chartKind_ == ChartKind::Heat) {
+                const int slot = std::max(1, (right - left) / std::max(1, count));
+                for (int i = 0; i < count; ++i) {
+                    const int barH = static_cast<int>((bottom - top) * sessionScan_.daily[static_cast<size_t>(i)].tokens / maxTokens);
+                    RECT bar = MakeRect(left + i * slot, bottom - barH, left + i * slot + std::max(1, slot - 2), bottom);
+                    fillRect(bar, chartKind_ == ChartKind::Heat ? heroValue : RGB(90, 140, 120));
+                }
+            } else if (count > 1) {
+                for (int i = 1; i < count; ++i) {
+                    const int x0 = left + (right - left) * (i - 1) / (count - 1);
+                    const int x1 = left + (right - left) * i / (count - 1);
+                    const int y0 = bottom - static_cast<int>((bottom - top) * sessionScan_.daily[static_cast<size_t>(i - 1)].tokens / maxTokens);
+                    const int y1 = bottom - static_cast<int>((bottom - top) * sessionScan_.daily[static_cast<size_t>(i)].tokens / maxTokens);
+                    RECT segment = MakeRect(std::min(x0, x1), std::min(y0, y1), std::max(x0, x1) + 2, std::max(y0, y1) + 2);
+                    fillRect(segment, heroValue);
+                }
+            }
+        }
+        y += ScaleForDpi(hwnd_, 166);
     }
 
     if (showModelScores_) {
@@ -2600,29 +3219,36 @@ void AppBarWindow::PaintContent(const RECT& clientRect) {
         DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
 }
 
-void AppBarWindow::ShowContextMenu(POINT screenPoint) {
+HMENU AppBarWindow::CreateContextMenuHandle() {
     HMENU menu = CreatePopupMenu();
     HMENU languageMenu = CreatePopupMenu();
     HMENU refreshIntervalMenu = CreatePopupMenu();
     HMENU displayModeMenu = CreatePopupMenu();
     HMENU rankingMenu = CreatePopupMenu();
     HMENU accountMenu = CreatePopupMenu();
-    authMenuAccounts_ = fetcher_.ListAuthAccounts();
+    ReloadAccounts();
     const size_t accountCount = std::min(authMenuAccounts_.size(), static_cast<size_t>(kMaxAuthMenuAccounts));
     if (accountCount == 0) {
-        AppendMenuW(accountMenu, MF_STRING | MF_GRAYED, 0, LocalizeText(L"(none imported)", L"（尚未导入）"));
+        AppendMenuW(accountMenu, MF_STRING | MF_GRAYED, 0, Tr(L"(none imported)", L"（尚未导入）", L"（尚未匯入）", L"(가져오지 않음)", L"（未取り込み）", L"（нет импорта）", L"(aucun import)"));
     } else {
         for (size_t i = 0; i < accountCount; ++i) {
-            const CodexUsageFetcher::AuthAccount& account = authMenuAccounts_[i];
+            const AccountEntry& account = authMenuAccounts_[i];
+            const std::wstring accountText = (account.provider == L"grok" ? L"Grok  " : L"Codex  ") + account.label;
             AppendMenuW(
                 accountMenu,
                 MF_STRING | (IsActiveAuth(account) ? MF_CHECKED : MF_UNCHECKED),
                 kCommandAccountBase + static_cast<UINT>(i),
-                account.label.c_str());
+                accountText.c_str());
         }
         AppendMenuW(accountMenu, MF_SEPARATOR, 0, nullptr);
     }
-    AppendMenuW(accountMenu, MF_STRING, kCommandImportAccount, LocalizeText(L"Import...", L"导入…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandImportAccount, Tr(L"Import file...", L"从文件导入…", L"從檔案匯入…", L"파일에서 가져오기…", L"ファイルから取り込み…", L"Импорт из файла…", L"Importer un fichier…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandPasteImport, Tr(L"Paste JSON...", L"粘贴 JSON…", L"貼上 JSON…", L"JSON 붙여넣기…", L"JSON を貼り付け…", L"Вставить JSON…", L"Coller le JSON…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandBrowserLogin, Tr(L"Browser sign-in...", L"浏览器登录…", L"瀏覽器登入…", L"브라우저 로그인…", L"ブラウザでログイン…", L"Вход через браузер…", L"Connexion navigateur…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandAlias, Tr(L"Rename...", L"重命名…", L"重新命名…", L"이름 바꾸기…", L"名前を変更…", L"Переименовать…", L"Renommer…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandMoveUp, Tr(L"Move up", L"上移", L"上移", L"위로", L"上へ", L"Выше", L"Monter"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandMoveDown, Tr(L"Move down", L"下移", L"下移", L"아래로", L"下へ", L"Ниже", L"Descendre"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandDeleteAccount, Tr(L"Delete copy", L"删除副本", L"刪除副本", L"복사본 삭제", L"コピーを削除", L"Удалить копию", L"Supprimer la copie"));
     const bool launchAtStartup = IsLaunchAtStartupEnabled();
     const UINT alwaysOnTopMenuState = MF_STRING
         | ((alwaysOnTop_ || taskbarMode_) ? MF_CHECKED : MF_UNCHECKED)
@@ -2630,7 +3256,17 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     AppendMenuW(languageMenu, MF_STRING | (language_ == Language::English ? MF_CHECKED : MF_UNCHECKED),
         kCommandLanguageEnglish, L"English");
     AppendMenuW(languageMenu, MF_STRING | (language_ == Language::Chinese ? MF_CHECKED : MF_UNCHECKED),
-        kCommandLanguageChinese, L"中文");
+        kCommandLanguageChinese, L"简体中文");
+    AppendMenuW(languageMenu, MF_STRING | (language_ == Language::Traditional ? MF_CHECKED : MF_UNCHECKED),
+        kCommandLanguageTraditional, L"繁體中文");
+    AppendMenuW(languageMenu, MF_STRING | (language_ == Language::Korean ? MF_CHECKED : MF_UNCHECKED),
+        kCommandLanguageKorean, L"한국어");
+    AppendMenuW(languageMenu, MF_STRING | (language_ == Language::Japanese ? MF_CHECKED : MF_UNCHECKED),
+        kCommandLanguageJapanese, L"日本語");
+    AppendMenuW(languageMenu, MF_STRING | (language_ == Language::Russian ? MF_CHECKED : MF_UNCHECKED),
+        kCommandLanguageRussian, L"Русский");
+    AppendMenuW(languageMenu, MF_STRING | (language_ == Language::French ? MF_CHECKED : MF_UNCHECKED),
+        kCommandLanguageFrench, L"Français");
     AppendMenuW(refreshIntervalMenu, MF_STRING | (refreshIntervalSeconds_ == 60 ? MF_CHECKED : MF_UNCHECKED),
         kCommandRefreshInterval1Minute, LocalizeText(L"1 minute", L"1分钟"));
     AppendMenuW(refreshIntervalMenu, MF_STRING | (refreshIntervalSeconds_ == 180 ? MF_CHECKED : MF_UNCHECKED),
@@ -2658,13 +3294,40 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         && snapshot_.resetCredits.fetched
         && snapshot_.resetCredits.availableCount > 0
         && !resetCreditInFlight_;
+    HMENU providerMenu = CreatePopupMenu();
+    AppendMenuW(providerMenu, MF_STRING | (provider_ == L"codex" ? MF_CHECKED : MF_UNCHECKED), kCommandProviderCodex, L"Codex");
+    AppendMenuW(providerMenu, MF_STRING | (provider_ == L"grok" ? MF_CHECKED : MF_UNCHECKED), kCommandProviderGrok, L"Grok");
+    HMENU detailMenu = CreatePopupMenu();
+    AppendMenuW(detailMenu, MF_STRING | (featurePage_ == FeaturePage::None ? MF_CHECKED : MF_UNCHECKED), kCommandDetailOff, Tr(L"Hidden", L"隐藏", L"隱藏", L"숨김", L"非表示", L"Скрыть", L"Masquer"));
+    AppendMenuW(detailMenu, MF_STRING | (featurePage_ == FeaturePage::Chart ? MF_CHECKED : MF_UNCHECKED), kCommandDetailChart, Tr(L"Usage chart", L"用量图", L"用量圖", L"사용량 차트", L"使用量グラフ", L"График", L"Graphique"));
+    AppendMenuW(detailMenu, MF_STRING | (featurePage_ == FeaturePage::Sessions ? MF_CHECKED : MF_UNCHECKED), kCommandDetailSessions, Tr(L"Sessions", L"会话", L"工作階段", L"세션", L"セッション", L"Сессии", L"Sessions"));
+    AppendMenuW(detailMenu, MF_STRING | (chartKind_ == ChartKind::Heat ? MF_CHECKED : MF_UNCHECKED), kCommandChartHeat, Tr(L"Heatmap", L"热力", L"熱力", L"히트맵", L"ヒートマップ", L"Тепловая карта", L"Carte de chaleur"));
+    AppendMenuW(detailMenu, MF_STRING | (chartKind_ == ChartKind::Line ? MF_CHECKED : MF_UNCHECKED), kCommandChartLine, Tr(L"Line", L"折线", L"折線", L"선", L"折れ線", L"Линия", L"Courbe"));
+    AppendMenuW(detailMenu, MF_STRING | (chartKind_ == ChartKind::Bar ? MF_CHECKED : MF_UNCHECKED), kCommandChartBar, Tr(L"Bar", L"柱状", L"柱狀", L"막대", L"棒", L"Столбцы", L"Barres"));
+    AppendMenuW(detailMenu, MF_STRING | (usageRange_ == UsageRange::Today ? MF_CHECKED : MF_UNCHECKED), kCommandRangeToday, Tr(L"Today", L"今日", L"今日", L"오늘", L"今日", L"Сегодня", L"Aujourd'hui"));
+    AppendMenuW(detailMenu, MF_STRING | (usageRange_ == UsageRange::Cycle ? MF_CHECKED : MF_UNCHECKED), kCommandRangeCycle, Tr(L"This cycle", L"本周期", L"本週期", L"이번 주기", L"今周期", L"Этот цикл", L"Ce cycle"));
+    AppendMenuW(detailMenu, MF_STRING | (usageRange_ == UsageRange::PreviousCycle ? MF_CHECKED : MF_UNCHECKED), kCommandRangePrev, Tr(L"Previous cycle", L"上周期", L"上週期", L"이전 주기", L"前周期", L"Прошлый цикл", L"Cycle précédent"));
+    AppendMenuW(detailMenu, MF_STRING | (usageRange_ == UsageRange::Month ? MF_CHECKED : MF_UNCHECKED), kCommandRangeMonth, Tr(L"This month", L"本月", L"本月", L"이번 달", L"今月", L"Этот месяц", L"Ce mois"));
+    AppendMenuW(detailMenu, MF_STRING, kCommandRepairSessions, Tr(L"Repair session index", L"修复会话索引", L"修復工作階段索引", L"세션 인덱스 복구", L"セッション索引を修復", L"Починить индекс сессий", L"Réparer l'index"));
+    HMENU proxyMenu = CreatePopupMenu();
+    AppendMenuW(proxyMenu, MF_STRING | (proxy_.mode == ProxyConfig::Mode::System ? MF_CHECKED : MF_UNCHECKED), kCommandProxySystem, Tr(L"Follow system", L"跟随系统", L"跟隨系統", L"시스템 따름", L"システムに従う", L"Как в системе", L"Suivre le système"));
+    AppendMenuW(proxyMenu, MF_STRING | (proxy_.mode == ProxyConfig::Mode::Http ? MF_CHECKED : MF_UNCHECKED), kCommandProxyHttp, L"HTTP");
+    AppendMenuW(proxyMenu, MF_STRING | (proxy_.mode == ProxyConfig::Mode::Socks5 ? MF_CHECKED : MF_UNCHECKED), kCommandProxySocks, L"SOCKS5");
+    AppendMenuW(proxyMenu, MF_STRING, kCommandProxyEdit, Tr(L"Edit proxy...", L"编辑代理…", L"編輯代理…", L"프록시 편집…", L"プロキシを編集…", L"Изменить прокси…", L"Modifier le proxy…"));
+    AppendMenuW(proxyMenu, MF_STRING, kCommandProxyTest, Tr(L"Test connection", L"测试连接", L"測試連線", L"연결 테스트", L"接続テスト", L"Проверить связь", L"Tester la connexion"));
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(providerMenu), Tr(L"Provider", L"服务", L"服務", L"공급자", L"プロバイダ", L"Служба", L"Fournisseur"));
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(accountMenu), LocalizeText(L"Account", L"账号"));
     AppendMenuW(menu, MF_STRING, kCommandRefresh, LocalizeText(L"Refresh now", L"立即刷新"));
     AppendMenuW(menu, MF_STRING | (tokenRefreshInFlight_ ? MF_GRAYED : 0),
         kCommandRefreshToken, LocalizeText(L"Refresh token", L"刷新 Token"));
     AppendMenuW(menu, MF_STRING | (canResetCredit ? 0 : MF_GRAYED),
         kCommandResetCredit, LocalizeText(L"Reset credits...", L"重置额度…"));
+    AppendMenuW(menu, MF_STRING | (resetStatusEnabled_ ? MF_CHECKED : MF_UNCHECKED), kCommandResetStatusToggle, Tr(L"Reset updates", L"重置公告", L"重置公告", L"리셋 공지", L"リセット告知", L"Сбросы", L"Annonces de reset"));
+    AppendMenuW(menu, MF_STRING | (estimateEnabled_ ? MF_CHECKED : MF_UNCHECKED), kCommandEstimateToggle, Tr(L"Weekly estimate", L"周额度估算", L"週額度估算", L"주간 추정", L"週間見積もり", L"Оценка недели", L"Estimation hebdo"));
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(detailMenu), Tr(L"Usage detail", L"用量详情", L"用量詳情", L"사용량 상세", L"使用量の詳細", L"Подробности", L"Détail d'usage"));
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(proxyMenu), Tr(L"Proxy", L"代理", L"代理", L"프록시", L"プロキシ", L"Прокси", L"Proxy"));
     AppendMenuW(menu, MF_STRING, kCommandCheckVersion, LocalizeText(L"Check version", L"检查版本"));
+    AppendMenuW(menu, MF_STRING, kCommandDownloadUpdate, Tr(L"Download update...", L"下载更新…", L"下載更新…", L"업데이트 다운로드…", L"更新をダウンロード…", L"Скачать обновление…", L"Télécharger la mise à jour…"));
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(refreshIntervalMenu), LocalizeText(L"Refresh interval", L"刷新间隔"));
     AppendMenuW(menu, MF_STRING | (launchAtStartup ? MF_CHECKED : MF_UNCHECKED),
         kCommandLaunchAtStartup, LocalizeText(L"Launch at startup", L"开机自启"));
@@ -2678,24 +3341,97 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kCommandExit, LocalizeText(L"Exit", L"退出"));
 
-    const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
-    DestroyMenu(menu);
+    return menu;
+}
 
+void AppBarWindow::HandleMenuCommand(UINT command) {
+    const size_t accountCount = std::min(authMenuAccounts_.size(), static_cast<size_t>(kMaxAuthMenuAccounts));
     if (command == kCommandImportAccount) {
         ImportAccount();
-    } else if (command >= kCommandAccountBase && command < kCommandAccountBase + accountCount) {
-        const CodexUsageFetcher::AuthAccount& account = authMenuAccounts_[command - kCommandAccountBase];
-        if (!IsActiveAuth(account)) {
-            activeAuthId_ = account.id;
-            SaveActiveAuth();
-            resetCreditConfirmStep_ = 0;
-            KillTimer(hwnd_, kResetConfirmTimerId);
-            resetCreditActionMessage_.clear();
-            snapshot_ = {};
-            snapshot_.errorMessage = LocalizeText(L"Switching account...", L"正在切换账号...");
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            RequestRefresh(true);
+    } else if (command == kCommandPasteImport) {
+        PasteImport(provider_);
+    } else if (command == kCommandAlias) {
+        RenameActiveAccount();
+    } else if (command == kCommandMoveUp) {
+        MoveActiveAccount(-1);
+    } else if (command == kCommandMoveDown) {
+        MoveActiveAccount(1);
+    } else if (command == kCommandDeleteAccount) {
+        DeleteActiveAccount();
+    } else if (command == kCommandBrowserLogin) {
+        StartBrowserSignIn();
+    } else if (command == kCommandProviderCodex || command == kCommandProviderGrok) {
+        provider_ = command == kCommandProviderGrok ? L"grok" : L"codex";
+        activeAuthId_.clear();
+        SaveFeatureSettings();
+        RequestRefresh(true);
+    } else if (command == kCommandResetStatusToggle) {
+        resetStatusEnabled_ = !resetStatusEnabled_;
+        if (resetStatusEnabled_) {
+            SetTimer(hwnd_, kResetStatusTimerId, static_cast<UINT>(resetStatusIntervalSeconds_ * 1000), nullptr);
+            RequestResetStatus();
+        } else {
+            KillTimer(hwnd_, kResetStatusTimerId);
         }
+        SaveFeatureSettings();
+        FitWindowToContent();
+    } else if (command == kCommandEstimateToggle) {
+        estimateEnabled_ = !estimateEnabled_;
+        SaveFeatureSettings();
+        FitWindowToContent();
+    } else if (command == kCommandDetailOff || command == kCommandDetailChart || command == kCommandDetailSessions) {
+        featurePage_ = command == kCommandDetailChart ? FeaturePage::Chart
+            : command == kCommandDetailSessions ? FeaturePage::Sessions
+            : FeaturePage::None;
+        if (simpleMode_ || taskbarMode_) {
+            SetDisplayMode(false, false);
+        }
+        SaveFeatureSettings();
+        if (featurePage_ != FeaturePage::None) {
+            RequestSessionScan();
+        }
+        FitWindowToContent();
+    } else if (command == kCommandChartHeat || command == kCommandChartLine || command == kCommandChartBar) {
+        chartKind_ = command == kCommandChartLine ? ChartKind::Line
+            : command == kCommandChartBar ? ChartKind::Bar
+            : ChartKind::Heat;
+        featurePage_ = FeaturePage::Chart;
+        SaveFeatureSettings();
+        RequestSessionScan();
+        FitWindowToContent();
+    } else if (command == kCommandRepairSessions) {
+        RepairSessions();
+    } else if (command == kCommandProxySystem || command == kCommandProxyHttp || command == kCommandProxySocks) {
+        ApplyProxyMode(command == kCommandProxyHttp ? ProxyConfig::Mode::Http
+            : command == kCommandProxySocks ? ProxyConfig::Mode::Socks5
+            : ProxyConfig::Mode::System);
+    } else if (command == kCommandProxyEdit) {
+        ConfigureProxyServer();
+    } else if (command == kCommandProxyTest) {
+        TestProxy();
+    } else if (command == kCommandDownloadUpdate) {
+        DownloadAndStageUpdate();
+    } else if (command == kCommandRangeToday || command == kCommandRangeCycle || command == kCommandRangePrev || command == kCommandRangeMonth) {
+        usageRange_ = command == kCommandRangeToday ? UsageRange::Today
+            : command == kCommandRangePrev ? UsageRange::PreviousCycle
+            : command == kCommandRangeMonth ? UsageRange::Month
+            : UsageRange::Cycle;
+        SaveFeatureSettings();
+        RequestSessionScan();
+    } else if (command >= kCommandAccountBase && command < kCommandAccountBase + accountCount) {
+        const AccountEntry& account = authMenuAccounts_[command - kCommandAccountBase];
+        provider_ = account.provider.empty() ? L"codex" : account.provider;
+        activeAuthId_ = account.id;
+        SaveActiveAuth();
+        SaveFeatureSettings();
+        resetCreditConfirmStep_ = 0;
+        KillTimer(hwnd_, kResetConfirmTimerId);
+        resetCreditActionMessage_.clear();
+        snapshot_ = {};
+        grok_ = {};
+        snapshot_.errorMessage = LocalizeText(L"Switching account...", L"正在切换账号...");
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        RequestRefresh(true);
     } else if (command == kCommandRefresh) {
         RequestRefresh(true);
         if (showModelScores_) {
@@ -2718,7 +3454,7 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     } else if (command == kCommandRefreshInterval30Minutes) {
         SetRefreshIntervalSeconds(1800);
     } else if (command == kCommandLaunchAtStartup) {
-        SetLaunchAtStartupEnabled(!launchAtStartup);
+        SetLaunchAtStartupEnabled(!IsLaunchAtStartupEnabled());
     } else if (command == kCommandAlwaysOnTop) {
         alwaysOnTop_ = !alwaysOnTop_;
         UpdateWindowBounds(true);
@@ -2742,6 +3478,16 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         SetLanguage(Language::English);
     } else if (command == kCommandLanguageChinese) {
         SetLanguage(Language::Chinese);
+    } else if (command == kCommandLanguageTraditional) {
+        SetLanguage(Language::Traditional);
+    } else if (command == kCommandLanguageKorean) {
+        SetLanguage(Language::Korean);
+    } else if (command == kCommandLanguageJapanese) {
+        SetLanguage(Language::Japanese);
+    } else if (command == kCommandLanguageRussian) {
+        SetLanguage(Language::Russian);
+    } else if (command == kCommandLanguageFrench) {
+        SetLanguage(Language::French);
     } else if (command == kCommandResetPosition) {
         hasSavedRect_ = false;
         UpdateWindowBounds(false);
@@ -2749,6 +3495,189 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     } else if (command == kCommandExit) {
         DestroyWindow(hwnd_);
     }
+}
+
+namespace {
+
+struct StickyMenuState {
+    AppBarWindow* window = nullptr;
+    std::vector<MenuEntry> entries;
+    int hover = -1;
+    int scroll = 0;
+    int itemHeight = 28;
+};
+
+constexpr wchar_t kStickyMenuClass[] = L"CodexUsageBarStickyMenu";
+
+int StickyContentHeight(const StickyMenuState& state) {
+    return static_cast<int>(state.entries.size()) * state.itemHeight;
+}
+
+void PaintStickyMenu(HWND hwnd, StickyMenuState& state) {
+    PAINTSTRUCT paint = {};
+    HDC dc = BeginPaint(hwnd, &paint);
+    RECT client = {};
+    GetClientRect(hwnd, &client);
+    HBRUSH background = CreateSolidBrush(RGB(28, 32, 30));
+    FillRect(dc, &client, background);
+    DeleteObject(background);
+    SetBkMode(dc, TRANSPARENT);
+    HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    int y = -state.scroll;
+    for (size_t i = 0; i < state.entries.size(); ++i) {
+        const MenuEntry& entry = state.entries[i];
+        RECT row = {0, y, client.right, y + state.itemHeight};
+        if (static_cast<int>(i) == state.hover && !entry.header && entry.enabled) {
+            HBRUSH hover = CreateSolidBrush(RGB(52, 64, 58));
+            FillRect(dc, &row, hover);
+            DeleteObject(hover);
+        }
+        SetTextColor(dc, entry.header ? RGB(160, 170, 165) : entry.enabled ? RGB(236, 240, 236) : RGB(110, 116, 112));
+        std::wstring text = entry.checked ? (L"● " + entry.text) : (entry.header ? entry.text : (L"   " + entry.text));
+        DrawTextW(dc, text.c_str(), -1, &row, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        y += state.itemHeight;
+    }
+    SelectObject(dc, oldFont);
+    EndPaint(hwnd, &paint);
+}
+
+LRESULT CALLBACK StickyMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<StickyMenuState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        return TRUE;
+    }
+    if (state == nullptr) {
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+    if (message == WM_PAINT) {
+        PaintStickyMenu(hwnd, *state);
+        return 0;
+    }
+    if (message == WM_MOUSEWHEEL) {
+        state->scroll -= GET_WHEEL_DELTA_WPARAM(wParam) / 40;
+        if (state->scroll < 0) {
+            state->scroll = 0;
+        }
+        RECT client = {};
+        GetClientRect(hwnd, &client);
+        const int maxScroll = std::max(0, StickyContentHeight(*state) - static_cast<int>(client.bottom));
+        if (state->scroll > maxScroll) {
+            state->scroll = maxScroll;
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_MOUSEMOVE) {
+        const int index = (GET_Y_LPARAM(lParam) + state->scroll) / state->itemHeight;
+        state->hover = index >= 0 && index < static_cast<int>(state->entries.size()) ? index : -1;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_LBUTTONUP) {
+        const int index = (GET_Y_LPARAM(lParam) + state->scroll) / state->itemHeight;
+        if (index < 0 || index >= static_cast<int>(state->entries.size())) {
+            return 0;
+        }
+        const MenuEntry entry = state->entries[static_cast<size_t>(index)];
+        if (entry.header || !entry.enabled || entry.command == 0) {
+            return 0;
+        }
+        if (entry.command == kCommandCloseMenu) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        const bool closes = entry.command == kCommandImportAccount
+            || entry.command == kCommandPasteImport
+            || entry.command == kCommandAlias
+            || entry.command == kCommandDeleteAccount
+            || entry.command == kCommandProxyEdit
+            || entry.command == kCommandDownloadUpdate
+            || entry.command == kCommandExit;
+        state->window->HandleMenuCommand(entry.command);
+        if (closes || !IsWindow(hwnd)) {
+            if (IsWindow(hwnd)) {
+                DestroyWindow(hwnd);
+            }
+            return 0;
+        }
+        state->entries = state->window->BuildMenuEntries();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_KEYDOWN && wParam == VK_ESCAPE) {
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    if (message == WM_DESTROY) {
+        state->window->SetStickyMenu(nullptr);
+        delete state;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+}  // namespace
+
+std::vector<MenuEntry> AppBarWindow::BuildMenuEntries() {
+    std::vector<MenuEntry> entries;
+    HMENU menu = CreateContextMenuHandle();
+    std::function<void(HMENU, bool)> collect = [&](HMENU source, bool child) {
+        const int count = GetMenuItemCount(source);
+        for (int i = 0; i < count; ++i) {
+            wchar_t text[256] = {};
+            MENUITEMINFOW info = {};
+            info.cbSize = sizeof(info);
+            info.fMask = MIIM_FTYPE | MIIM_ID | MIIM_SUBMENU | MIIM_STATE | MIIM_STRING;
+            info.dwTypeData = text;
+            info.cch = 255;
+            if (!GetMenuItemInfoW(source, static_cast<UINT>(i), TRUE, &info)) {
+                continue;
+            }
+            if ((info.fType & MFT_SEPARATOR) != 0) {
+                continue;
+            }
+            MenuEntry entry;
+            entry.text = text;
+            entry.command = info.wID;
+            entry.checked = (info.fState & MFS_CHECKED) != 0;
+            entry.enabled = (info.fState & MFS_GRAYED) == 0;
+            if (info.hSubMenu != nullptr) {
+                entry.header = true;
+                entry.command = 0;
+                entries.push_back(entry);
+                collect(info.hSubMenu, true);
+                continue;
+            }
+            if (child) {
+                entry.text = L"    " + entry.text;
+            }
+            entries.push_back(std::move(entry));
+        }
+    };
+    MenuEntry closeEntry;
+    closeEntry.command = kCommandCloseMenu;
+    closeEntry.text = Tr(L"Close menu", L"关闭菜单", L"關閉選單", L"메뉴 닫기", L"メニューを閉じる", L"Закрыть меню", L"Fermer le menu");
+    entries.push_back(std::move(closeEntry));
+    collect(menu, false);
+    DestroyMenu(menu);
+    return entries;
+}
+
+void AppBarWindow::ShowContextMenu(POINT) {
+    if (stickyMenu_ != nullptr && IsWindow(stickyMenu_)) {
+        DestroyWindow(stickyMenu_);
+        stickyMenu_ = nullptr;
+    }
+    if (taskbarMode_ || simpleMode_) {
+        SetDisplayMode(false, false);
+    }
+    surface_ = Surface::Settings;
+    FitWindowToContent();
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 std::wstring AppBarWindow::FormatDuration(int totalSeconds) const {
@@ -2790,6 +3719,43 @@ std::wstring AppBarWindow::FormatRefreshCountdown(int totalSeconds) const {
         return std::to_wstring(minutes) + L"m " + std::to_wstring(seconds) + L"s";
     }
     return std::to_wstring(seconds) + L"s";
+}
+
+static long long Iso8601ToUnix(const std::wstring& text) {
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    if (swscanf_s(text.c_str(), L"%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second) < 6) {
+        return 0;
+    }
+    std::tm parts = {};
+    parts.tm_year = year - 1900;
+    parts.tm_mon = month - 1;
+    parts.tm_mday = day;
+    parts.tm_hour = hour;
+    parts.tm_min = minute;
+    parts.tm_sec = second;
+    const time_t utc = _mkgmtime(&parts);
+    if (utc < 0) {
+        return 0;
+    }
+    long long unix = static_cast<long long>(utc);
+    if (text.find(L'Z') != std::wstring::npos) {
+        return unix;
+    }
+    const size_t sign = text.find_first_of(L"+-", 19);
+    if (sign != std::wstring::npos) {
+        int offsetHour = 0;
+        int offsetMinute = 0;
+        if (swscanf_s(text.c_str() + sign, L"%d:%d", &offsetHour, &offsetMinute) >= 1) {
+            const int magnitude = (offsetHour < 0 ? -offsetHour : offsetHour) * 3600 + offsetMinute * 60;
+            unix -= offsetHour < 0 ? -magnitude : magnitude;
+        }
+    }
+    return unix;
 }
 
 std::wstring AppBarWindow::FormatDateTime(long long unixSeconds) const {

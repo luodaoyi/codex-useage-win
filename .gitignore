@@ -2,6 +2,8 @@ build/
 build-vs/
 auth.json
 accounts/*.json
+xai-*.json
+codex-*.json
 artifacts/
 *.obj
 *.exe

@@ -1,6 +1,8 @@
 #include "CodexUsageFetcher.h"
 
 #include "JsonLite.h"
+#include "Net.h"
+#include "ProxyConfig.h"
 
 #include <Windows.h>
 #include <Shlwapi.h>
@@ -426,7 +428,22 @@ std::optional<std::string> HttpExchange(
         errorMessage->clear();
     }
 
-    const ResolvedProxy proxy = ResolveHttpProxyFromEnv();
+    const ProxyConfig configured = GetProcessProxy();
+    if (configured.mode == ProxyConfig::Mode::Socks5) {
+        return Socks5Https(host, path, method, headers, body, configured, errorMessage);
+    }
+    ResolvedProxy proxy = ResolveHttpProxyFromEnv();
+    if (configured.mode == ProxyConfig::Mode::Http) {
+        if (configured.server.empty()) {
+            if (errorMessage != nullptr) {
+                *errorMessage = L"HTTP proxy server is empty";
+            }
+            return std::nullopt;
+        }
+        proxy.useNamedProxy = true;
+        proxy.server = configured.server;
+        proxy.bypass.clear();
+    }
     HINTERNET session = nullptr;
     if (proxy.useNamedProxy) {
         session = WinHttpOpen(
@@ -488,6 +505,14 @@ std::optional<std::string> HttpExchange(
 
         DWORD timeout = 15000;
         WinHttpSetTimeouts(request, timeout, timeout, timeout, timeout);
+        if (configured.mode == ProxyConfig::Mode::Http && !configured.user.empty()) {
+            WinHttpSetOption(request, WINHTTP_OPTION_PROXY_USERNAME,
+                const_cast<wchar_t*>(configured.user.c_str()),
+                static_cast<DWORD>(configured.user.size() * sizeof(wchar_t)));
+            WinHttpSetOption(request, WINHTTP_OPTION_PROXY_PASSWORD,
+                const_cast<wchar_t*>(configured.password.c_str()),
+                static_cast<DWORD>(configured.password.size() * sizeof(wchar_t)));
+        }
 
         LPVOID bodyPtr = body != nullptr ? const_cast<char*>(body->data()) : WINHTTP_NO_REQUEST_DATA;
         DWORD bodySize = body != nullptr ? static_cast<DWORD>(body->size()) : 0;
@@ -1885,4 +1910,14 @@ ModelIqSnapshot CodexUsageFetcher::ParseModelIqJson(const std::string& jsonText,
 
     snapshot.success = true;
     return snapshot;
+}
+
+std::optional<std::string> NetHttps(
+    const std::wstring& host,
+    const std::wstring& path,
+    const std::wstring& method,
+    const std::vector<std::wstring>& headers,
+    const std::string* body,
+    std::wstring* errorMessage) {
+    return HttpExchange(L"CodexUsageBar", host, path, method, headers, body, errorMessage);
 }

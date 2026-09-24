@@ -1,6 +1,12 @@
 #pragma once
 
+#include "AccountLibrary.h"
 #include "CodexUsageFetcher.h"
+#include "GrokBilling.h"
+#include "ProxyConfig.h"
+#include "QuotaEstimate.h"
+#include "ResetStatus.h"
+#include "SessionIndex.h"
 
 #include <Windows.h>
 #include <d2d1.h>
@@ -8,9 +14,18 @@
 #include <wrl/client.h>
 #include <atomic>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+struct MenuEntry {
+    UINT command = 0;
+    std::wstring text;
+    bool checked = false;
+    bool header = false;
+    bool enabled = true;
+};
 
 class AppBarWindow {
 public:
@@ -19,6 +34,9 @@ public:
 
     bool Create();
     int Run();
+    void SetStickyMenu(HWND hwnd) { stickyMenu_ = hwnd; }
+    std::vector<MenuEntry> BuildMenuEntries();
+    void HandleMenuCommand(UINT command);
 
 private:
     static constexpr UINT kUsageUpdatedMessage = WM_APP + 1;
@@ -30,11 +48,45 @@ private:
     static constexpr UINT_PTR kRefreshTimerId = 2;
     static constexpr UINT_PTR kResetConfirmTimerId = 3;
     static constexpr UINT_PTR kModelScoresTimerId = 4;
+    static constexpr UINT_PTR kResetStatusTimerId = 5;
+    static constexpr UINT kBrowserDoneMessage = WM_APP + 6;
+    static constexpr UINT kSessionScanMessage = WM_APP + 7;
+    static constexpr UINT kResetStatusMessage = WM_APP + 8;
+    static constexpr UINT kGrokUpdatedMessage = WM_APP + 9;
     static constexpr int kModelScoresRefreshIntervalSeconds = 300;
 
     enum class Language {
         English = 0,
         Chinese = 1,
+        Traditional = 2,
+        Korean = 3,
+        Japanese = 4,
+        Russian = 5,
+        French = 6,
+    };
+
+    enum class FeaturePage {
+        None = 0,
+        Chart = 1,
+        Sessions = 2,
+    };
+
+    enum class Surface {
+        Usage = 0,
+        Accounts = 1,
+        Settings = 2,
+    };
+
+    struct UiHit {
+        RECT rect = {};
+        UINT command = 0;
+        std::wstring accountId;
+    };
+
+    enum class ChartKind {
+        Heat = 0,
+        Line = 1,
+        Bar = 2,
     };
 
     enum class DragMode {
@@ -63,8 +115,34 @@ private:
     void LoadSettings();
     void SaveSettings() const;
     void SaveActiveAuth() const;
+    void LoadFeatureSettings();
+    void SaveFeatureSettings() const;
     std::wstring ActiveAuthPath() const;
-    bool IsActiveAuth(const CodexUsageFetcher::AuthAccount& account) const;
+    bool IsActiveAuth(const AccountEntry& account) const;
+    int ExtraFeatureHeight() const;
+    void ReloadAccounts();
+    void PasteImport(const std::wstring& provider);
+    void RenameActiveAccount();
+    void MoveActiveAccount(int delta);
+    void DeleteActiveAccount();
+    void StartBrowserSignIn();
+    void RequestResetStatus();
+    void RequestSessionScan();
+    void RepairSessions();
+    void ApplyProxyMode(ProxyConfig::Mode mode);
+    void ConfigureProxyServer();
+    void TestProxy();
+    void DownloadAndStageUpdate();
+    void RequestGrokRefresh();
+    const wchar_t* Tr(
+        const wchar_t* english,
+        const wchar_t* simplified,
+        const wchar_t* traditional,
+        const wchar_t* korean,
+        const wchar_t* japanese,
+        const wchar_t* russian,
+        const wchar_t* french) const;
+    std::optional<std::wstring> PromptText(const wchar_t* title, bool multiline) const;
     std::wstring GetSettingsPath() const;
     std::wstring GetExecutablePath() const;
     void RefreshTheme();
@@ -124,7 +202,9 @@ private:
 
     void Paint(HDC hdc);
     void PaintContent(const RECT& clientRect);
+    void DrawAccountDropdown();
     void ShowContextMenu(POINT screenPoint);
+    HMENU CreateContextMenuHandle();
     int GetMinimumWidgetWidth() const;
     int GetMinimumWidgetHeight(int width) const;
     void SetLanguage(Language language);
@@ -187,11 +267,34 @@ private:
     UsageSnapshot snapshot_;
     ModelIqSnapshot modelScores_;
     CodexUsageFetcher fetcher_;
+    AccountLibrary accounts_;
+    std::wstring provider_ = L"codex";
+    bool resetStatusEnabled_ = true;
+    int resetStatusIntervalSeconds_ = 300;
+    ResetStatusInfo resetStatus_;
+    bool estimateEnabled_ = true;
+    QuotaEstimateView estimate_;
+    FeaturePage featurePage_ = FeaturePage::None;
+    Surface surface_ = Surface::Usage;
+    bool accountDropOpen_ = false;
+    RECT accountDropRect_ = {};
+    std::vector<UiHit> uiHits_;
+    ChartKind chartKind_ = ChartKind::Heat;
+    UsageRange usageRange_ = UsageRange::Cycle;
+    SessionScan sessionScan_;
+    GrokSnapshot grok_;
+    ProxyConfig proxy_;
+    std::atomic_bool sessionScanInFlight_ = false;
+    std::atomic_bool resetStatusInFlight_ = false;
+    std::atomic_bool grokInFlight_ = false;
+    std::atomic_bool browserSignInInFlight_ = false;
+    RECT resetLinkRect_ = {};
+    HWND stickyMenu_ = nullptr;
     // Settings key of the selected credential file. Empty means the default slot.
     std::wstring activeAuthId_;
     // Account id captured when the in-flight usage refresh started.
     std::wstring inflightAuthId_;
-    std::vector<CodexUsageFetcher::AuthAccount> authMenuAccounts_;
+    std::vector<AccountEntry> authMenuAccounts_;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
