@@ -38,7 +38,7 @@ The widget reads usage limits from the current Codex account and displays them i
 
 - Native `Win32 + Direct2D + DirectWrite + WinHTTP`
 - No `C#`, no `WebView`
-- Prefers `auth.json` next to the executable, otherwise `%USERPROFILE%\.codex\auth.json` or `%CODEX_HOME%\auth.json`
+- Runtime reads only `accounts\*.json` next to the executable (one file per account). Account → Import… copies the chosen auth file into `accounts\` and does not modify the source. Switch imported accounts from that menu. The choice is `active_auth` in `%AppData%\CodexUsageBar\settings.ini`
 - Accepts both native Codex auth (`tokens.access_token`) and a flat CPA export (`access_token` / `id_token` / `refresh_token` at the root, `type` = `codex`)
 - Requests `GET https://chatgpt.com/backend-api/wham/usage`
 - Optional request-level HTTP(S) proxy via env vars (does not change the system proxy)
@@ -118,7 +118,7 @@ CodexUsageBar.exe
 Notes:
 
 - Proxy applies only to this app's WinHTTP requests
-- `auth.json` next to the exe is for credentials only and is separate from proxy settings
+- `accounts\*.json` holds copied credentials only and is separate from proxy settings. The original `auth.json` is neither read nor written at runtime
 
 See also [README-zh.md](README-zh.md).
 
@@ -178,7 +178,7 @@ If the default branch is `main`, replace `master` with `main`.
 
 ## Known Limitations
 
-- Near expiry, or on HTTP 401/403, it refreshes with `refresh_token` and writes the new tokens back to that same `auth.json`
+- Near expiry, or on HTTP 401/403, it refreshes with `refresh_token` and writes the new tokens back to that account's own file
 - If the OpenAI backend response changes, the parser must be updated accordingly
 - This is a desktop overlay widget, not the legacy Windows Gadget platform
 

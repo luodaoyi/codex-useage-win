@@ -38,7 +38,7 @@
 
 - 原生 `Win32 + Direct2D + DirectWrite + WinHTTP`
 - 无 `C#`、无 `WebView`
-- 优先读取可执行文件同目录的 `auth.json`，否则读取 `%USERPROFILE%\.codex\auth.json` 或 `%CODEX_HOME%\auth.json`
+- 运行时只读取可执行文件同目录的 `accounts\*.json`（一账号一文件）。右键「账号 → 导入…」选择凭证文件后，程序把该文件复制进 `accounts\`，不修改原文件。右键切换已导入账号。当前选择记在 `%AppData%\CodexUsageBar\settings.ini` 的 `active_auth`
 - 同时接受 Codex 原生（`tokens.access_token`）和 CPA 导出的扁平文件（顶层 `access_token` / `id_token` / `refresh_token`，`type` 为 `codex`）
 - 请求 `GET https://chatgpt.com/backend-api/wham/usage`
 - 支持通过环境变量配置请求级 HTTP(S) 代理（不改系统全局代理）
@@ -118,7 +118,7 @@ CodexUsageBar.exe
 说明：
 
 - 代理只作用于本程序的 WinHTTP 请求，不会修改系统代理设置
-- 可执行文件同目录的 `auth.json` 仅用于登录凭据，与代理配置无关
+- `accounts\*.json` 是复制进来的登录凭据，与代理配置无关。原 `auth.json` 不会被直接读取或写回
 
 ## 本地构建
 
@@ -176,7 +176,7 @@ git push origin v0.1.0
 
 ## 已知限制
 
-- 临近过期或遇到 401/403 时会用 `refresh_token` 续期，并写回当前这份 `auth.json`
+- 临近过期或遇到 401/403 时会用 `refresh_token` 续期，并写回当前账号那一份凭证文件
 - 如果 OpenAI 后端接口字段变化，需要同步调整解析逻辑
 - 当前是桌面浮层挂件，不是 Windows 7 时代的官方 Gadget 平台
 

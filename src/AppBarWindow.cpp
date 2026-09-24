@@ -1,6 +1,7 @@
 #include "AppBarWindow.h"
 #include "AppVersion.h"
 
+#include <commdlg.h>
 #include <ShlObj.h>
 #include <shellapi.h>
 #include <winreg.h>
@@ -45,6 +46,9 @@ constexpr UINT kCommandModelScoresOff = 19;
 constexpr UINT kCommandModelScoresSoftware = 20;
 constexpr UINT kCommandModelScoresVisual = 21;
 constexpr UINT kCommandResetCredit = 22;
+constexpr UINT kCommandImportAccount = 23;
+constexpr UINT kCommandAccountBase = 1000;
+constexpr UINT kMaxAuthMenuAccounts = 64;
 constexpr int kModelScoresPageSize = 10;
 constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 360;
@@ -998,6 +1002,24 @@ void AppBarWindow::SetDisplayMode(bool simpleMode, bool taskbarMode) {
 
 void AppBarWindow::LoadSettings() {
     const std::wstring path = GetSettingsPath();
+    wchar_t activeAuth[1024] = {};
+    GetPrivateProfileStringW(L"account", L"active_auth", L"", activeAuth, 1024, path.c_str());
+    activeAuthId_ = activeAuth;
+    while (!activeAuthId_.empty()
+        && (activeAuthId_.front() == L' ' || activeAuthId_.front() == L'\t')) {
+        activeAuthId_.erase(activeAuthId_.begin());
+    }
+    while (!activeAuthId_.empty()
+        && (activeAuthId_.back() == L' ' || activeAuthId_.back() == L'\t'
+            || activeAuthId_.back() == L'\r' || activeAuthId_.back() == L'\n')) {
+        activeAuthId_.pop_back();
+    }
+    for (wchar_t& ch : activeAuthId_) {
+        if (ch == L'/') {
+            ch = L'\\';
+        }
+    }
+
     const int version = GetPrivateProfileIntW(L"layout", L"layout_version", 0, path.c_str());
     alwaysOnTop_ = GetPrivateProfileIntW(L"layout", L"always_on_top", 0, path.c_str()) != 0;
     lockPosition_ = GetPrivateProfileIntW(L"layout", L"lock_position", 0, path.c_str()) != 0;
@@ -1088,6 +1110,39 @@ void AppBarWindow::SaveSettings() const {
     WritePrivateProfileStringW(L"layout", L"y", std::to_wstring(savedRect_.top).c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"width", std::to_wstring(RectWidth(savedRect_)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"layout", L"height", std::to_wstring(RectHeight(savedRect_)).c_str(), path.c_str());
+}
+
+void AppBarWindow::SaveActiveAuth() const {
+    const std::wstring path = GetSettingsPath();
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::wstring stored = activeAuthId_;
+    for (wchar_t& ch : stored) {
+        if (ch == L'\\') {
+            ch = L'/';
+        }
+    }
+    WritePrivateProfileStringW(L"account", L"active_auth", stored.c_str(), path.c_str());
+}
+
+std::wstring AppBarWindow::ActiveAuthPath() const {
+    return fetcher_.ResolveActiveAuthPath(activeAuthId_);
+}
+
+bool AppBarWindow::IsActiveAuth(const CodexUsageFetcher::AuthAccount& account) const {
+    if (authMenuAccounts_.empty()) {
+        return false;
+    }
+    const CodexUsageFetcher::AuthAccount* selected = &authMenuAccounts_.front();
+    if (!activeAuthId_.empty()) {
+        for (const CodexUsageFetcher::AuthAccount& item : authMenuAccounts_) {
+            if (_wcsicmp(item.id.c_str(), activeAuthId_.c_str()) == 0) {
+                selected = &item;
+                break;
+            }
+        }
+    }
+    return _wcsicmp(account.id.c_str(), selected->id.c_str()) == 0;
 }
 
 std::wstring AppBarWindow::GetSettingsPath() const {
@@ -1362,8 +1417,10 @@ void AppBarWindow::RequestRefresh(bool force) {
     RestartRefreshTimer();
 
     const HWND target = hwnd_;
-    std::thread([this, target]() {
-        auto* result = new UsageSnapshot(fetcher_.Fetch());
+    const std::wstring authPath = ActiveAuthPath();
+    inflightAuthId_ = activeAuthId_;
+    std::thread([this, target, authPath]() {
+        auto* result = new UsageSnapshot(fetcher_.Fetch(authPath));
         PostMessageW(target, kUsageUpdatedMessage, 0, reinterpret_cast<LPARAM>(result));
     }).detach();
 }
@@ -1371,6 +1428,10 @@ void AppBarWindow::RequestRefresh(bool force) {
 void AppBarWindow::OnUsageUpdated(UsageSnapshot* snapshot) {
     std::unique_ptr<UsageSnapshot> holder(snapshot);
     refreshInFlight_ = false;
+    if (inflightAuthId_ != activeAuthId_) {
+        RequestRefresh(true);
+        return;
+    }
     if (snapshot != nullptr) {
         snapshot_ = *snapshot;
         if (snapshot_.success) {
@@ -1565,8 +1626,10 @@ void AppBarWindow::RequestConsumeResetCredit() {
 
     const HWND target = hwnd_;
     const std::wstring redeemId = CreateRedeemRequestId();
-    std::thread([this, target, redeemId]() {
-        auto* result = new ConsumeResetCreditResult(fetcher_.ConsumeRateLimitResetCredit(redeemId));
+    const std::wstring authPath = ActiveAuthPath();
+    std::thread([this, target, redeemId, authPath]() {
+        auto* result = new ConsumeResetCreditResult(
+            fetcher_.ConsumeRateLimitResetCredit(redeemId, authPath));
         PostMessageW(target, kResetCreditConsumedMessage, 0, reinterpret_cast<LPARAM>(result));
     }).detach();
 }
@@ -1587,6 +1650,42 @@ void AppBarWindow::OnResetCreditConsumed(ConsumeResetCreditResult* result) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
+void AppBarWindow::ImportAccount() {
+    wchar_t file[MAX_PATH] = {};
+    const std::wstring initialDirectory = std::filesystem::path(GetExecutablePath()).parent_path().wstring();
+    OPENFILENAMEW dialog = {};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = hwnd_;
+    dialog.lpstrFilter = L"Auth JSON\0*.json\0All files\0*.*\0";
+    dialog.lpstrFile = file;
+    dialog.nMaxFile = MAX_PATH;
+    dialog.lpstrInitialDir = initialDirectory.c_str();
+    dialog.lpstrTitle = LocalizeText(L"Choose an account to import", L"选择要导入的账号");
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&dialog)) {
+        return;
+    }
+
+    const CodexUsageFetcher::AuthImportResult imported = fetcher_.ImportAuthFile(file);
+    if (!imported.success) {
+        resetCreditActionMessage_ = imported.errorMessage.empty()
+            ? std::wstring(LocalizeText(L"Failed to import account", L"导入账号失败"))
+            : imported.errorMessage;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    activeAuthId_ = imported.authId;
+    SaveActiveAuth();
+    resetCreditConfirmStep_ = 0;
+    KillTimer(hwnd_, kResetConfirmTimerId);
+    resetCreditActionMessage_.clear();
+    snapshot_ = {};
+    snapshot_.errorMessage = LocalizeText(L"Account imported. Loading...", L"账号已导入，正在读取...");
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    RequestRefresh(true);
+}
+
 void AppBarWindow::RequestRefreshToken() {
     if (tokenRefreshInFlight_.exchange(true)) {
         return;
@@ -1596,8 +1695,9 @@ void AppBarWindow::RequestRefreshToken() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 
     const HWND target = hwnd_;
-    std::thread([this, target]() {
-        auto* result = new TokenRefreshResult(fetcher_.ForceRefreshAuthTokens());
+    const std::wstring authPath = ActiveAuthPath();
+    std::thread([this, target, authPath]() {
+        auto* result = new TokenRefreshResult(fetcher_.ForceRefreshAuthTokens(authPath));
         PostMessageW(target, kTokenRefreshedMessage, 0, reinterpret_cast<LPARAM>(result));
     }).detach();
 }
@@ -2506,6 +2606,23 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     HMENU refreshIntervalMenu = CreatePopupMenu();
     HMENU displayModeMenu = CreatePopupMenu();
     HMENU rankingMenu = CreatePopupMenu();
+    HMENU accountMenu = CreatePopupMenu();
+    authMenuAccounts_ = fetcher_.ListAuthAccounts();
+    const size_t accountCount = std::min(authMenuAccounts_.size(), static_cast<size_t>(kMaxAuthMenuAccounts));
+    if (accountCount == 0) {
+        AppendMenuW(accountMenu, MF_STRING | MF_GRAYED, 0, LocalizeText(L"(none imported)", L"（尚未导入）"));
+    } else {
+        for (size_t i = 0; i < accountCount; ++i) {
+            const CodexUsageFetcher::AuthAccount& account = authMenuAccounts_[i];
+            AppendMenuW(
+                accountMenu,
+                MF_STRING | (IsActiveAuth(account) ? MF_CHECKED : MF_UNCHECKED),
+                kCommandAccountBase + static_cast<UINT>(i),
+                account.label.c_str());
+        }
+        AppendMenuW(accountMenu, MF_SEPARATOR, 0, nullptr);
+    }
+    AppendMenuW(accountMenu, MF_STRING, kCommandImportAccount, LocalizeText(L"Import...", L"导入…"));
     const bool launchAtStartup = IsLaunchAtStartupEnabled();
     const UINT alwaysOnTopMenuState = MF_STRING
         | ((alwaysOnTop_ || taskbarMode_) ? MF_CHECKED : MF_UNCHECKED)
@@ -2541,6 +2658,7 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
         && snapshot_.resetCredits.fetched
         && snapshot_.resetCredits.availableCount > 0
         && !resetCreditInFlight_;
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(accountMenu), LocalizeText(L"Account", L"账号"));
     AppendMenuW(menu, MF_STRING, kCommandRefresh, LocalizeText(L"Refresh now", L"立即刷新"));
     AppendMenuW(menu, MF_STRING | (tokenRefreshInFlight_ ? MF_GRAYED : 0),
         kCommandRefreshToken, LocalizeText(L"Refresh token", L"刷新 Token"));
@@ -2563,7 +2681,22 @@ void AppBarWindow::ShowContextMenu(POINT screenPoint) {
     const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, screenPoint.x, screenPoint.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
 
-    if (command == kCommandRefresh) {
+    if (command == kCommandImportAccount) {
+        ImportAccount();
+    } else if (command >= kCommandAccountBase && command < kCommandAccountBase + accountCount) {
+        const CodexUsageFetcher::AuthAccount& account = authMenuAccounts_[command - kCommandAccountBase];
+        if (!IsActiveAuth(account)) {
+            activeAuthId_ = account.id;
+            SaveActiveAuth();
+            resetCreditConfirmStep_ = 0;
+            KillTimer(hwnd_, kResetConfirmTimerId);
+            resetCreditActionMessage_.clear();
+            snapshot_ = {};
+            snapshot_.errorMessage = LocalizeText(L"Switching account...", L"正在切换账号...");
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            RequestRefresh(true);
+        }
+    } else if (command == kCommandRefresh) {
         RequestRefresh(true);
         if (showModelScores_) {
             RequestModelScoresRefresh(true);

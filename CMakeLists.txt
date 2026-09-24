@@ -56,6 +56,7 @@ target_link_libraries(CodexUsageBar PRIVATE
     ole32
     shell32
     shlwapi
+    comdlg32
     user32
     winhttp
 )

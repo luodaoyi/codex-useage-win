@@ -62,6 +62,9 @@ private:
 
     void LoadSettings();
     void SaveSettings() const;
+    void SaveActiveAuth() const;
+    std::wstring ActiveAuthPath() const;
+    bool IsActiveAuth(const CodexUsageFetcher::AuthAccount& account) const;
     std::wstring GetSettingsPath() const;
     std::wstring GetExecutablePath() const;
     void RefreshTheme();
@@ -82,6 +85,7 @@ private:
     void ArmOrConsumeResetCredit();
     void RequestConsumeResetCredit();
     void RequestRefreshToken();
+    void ImportAccount();
     void OnTokenRefreshed(TokenRefreshResult* result);
     void RequestModelScoresRefresh(bool force);
     void OnModelScoresUpdated(ModelIqSnapshot* snapshot);
@@ -183,6 +187,11 @@ private:
     UsageSnapshot snapshot_;
     ModelIqSnapshot modelScores_;
     CodexUsageFetcher fetcher_;
+    // Settings key of the selected credential file. Empty means the default slot.
+    std::wstring activeAuthId_;
+    // Account id captured when the in-flight usage refresh started.
+    std::wstring inflightAuthId_;
+    std::vector<CodexUsageFetcher::AuthAccount> authMenuAccounts_;
 
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;

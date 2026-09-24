@@ -112,19 +112,43 @@ public:
         std::wstring authPath;
     };
 
-    UsageSnapshot Fetch() const;
+    // One copied credential file per account. id is "accounts\\<file>.json".
+    // Usage never reads the source auth.json; import copies it first.
+    struct AuthAccount {
+        std::wstring id;
+        std::wstring label;
+        std::wstring path;
+    };
+
+    struct AuthImportResult {
+        bool success = false;
+        std::wstring authId;
+        std::wstring errorMessage;
+    };
+
+    // Imported copies beside the executable only, sorted by filename.
+    std::vector<AuthAccount> ListAuthAccounts() const;
+    // Empty or unknown id selects the first imported copy. Empty if none exist.
+    std::wstring ResolveActiveAuthPath(const std::wstring& activeAuthId) const;
+    // Copy sourcePath into accounts\. Does not modify the source file.
+    AuthImportResult ImportAuthFile(const std::wstring& sourcePath) const;
+
+    UsageSnapshot Fetch(const std::wstring& authPath) const;
     ReleaseVersionInfo FetchLatestRelease() const;
     ModelIqSnapshot FetchModelIq(RadarMetricKind kind) const;
 
-    // Force OAuth refresh and write tokens back to auth.json (manual menu action).
-    TokenRefreshResult ForceRefreshAuthTokens() const;
+    // Force OAuth refresh and write tokens back to this account's file.
+    TokenRefreshResult ForceRefreshAuthTokens(const std::wstring& authPath) const;
 
     // Spends one real rate-limit reset credit. Do not call casually.
-    ConsumeResetCreditResult ConsumeRateLimitResetCredit(const std::wstring& redeemRequestId) const;
+    ConsumeResetCreditResult ConsumeRateLimitResetCredit(
+        const std::wstring& redeemRequestId,
+        const std::wstring& authPath) const;
 
 private:
-    std::wstring ResolveAuthJsonPath() const;
-    std::optional<AuthCredentials> ReadAuthCredentials(std::wstring* errorMessage) const;
+    std::optional<AuthCredentials> ReadAuthCredentials(
+        const std::wstring& authPath,
+        std::wstring* errorMessage) const;
     // Refresh OAuth tokens and persist updated tokens/id_token back to auth.json.
     bool RefreshAuthCredentials(AuthCredentials* credentials, std::wstring* errorMessage) const;
     bool PersistAuthCredentials(const AuthCredentials& credentials, std::wstring* errorMessage) const;

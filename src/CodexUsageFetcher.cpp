@@ -8,6 +8,7 @@
 #include <winhttp.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -177,6 +178,54 @@ std::wstring ModelIqDedupKey(const ModelIqScore& score) {
     return score.label;
 }
 
+std::wstring SanitizeFileStem(const std::wstring& label) {
+    std::wstring stem;
+    stem.reserve(label.size());
+    for (wchar_t ch : label) {
+        const bool keep = (ch >= L'a' && ch <= L'z')
+            || (ch >= L'A' && ch <= L'Z')
+            || (ch >= L'0' && ch <= L'9')
+            || ch == L'.' || ch == L'-' || ch == L'_';
+        if (keep) {
+            stem.push_back(ch);
+        } else if (ch == L'@' || ch == L' ' || ch == L'+') {
+            stem.push_back(L'_');
+        }
+    }
+    while (!stem.empty() && (stem.front() == L'.' || stem.back() == L'.')) {
+        if (stem.front() == L'.') {
+            stem.erase(stem.begin());
+        }
+        if (!stem.empty() && stem.back() == L'.') {
+            stem.pop_back();
+        }
+    }
+    if (stem.empty()) {
+        stem = L"account";
+    }
+    if (stem.size() > 80) {
+        stem.resize(80);
+    }
+    return stem;
+}
+
+std::wstring ModuleDirectory() {
+    wchar_t modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) == 0) {
+        return L".";
+    }
+    const std::wstring directory = std::filesystem::path(modulePath).parent_path().wstring();
+    return directory.empty() ? L"." : directory;
+}
+
+bool SameFilePath(const std::wstring& left, const std::wstring& right) {
+    if (_wcsicmp(left.c_str(), right.c_str()) == 0) {
+        return true;
+    }
+    std::error_code error;
+    return std::filesystem::equivalent(left, right, error);
+}
+
 std::wstring JoinPath(const std::wstring& base, const std::wstring& child) {
     std::wstring result = base;
     if (!result.empty() && result.back() != L'\\' && result.back() != L'/') {
@@ -184,6 +233,10 @@ std::wstring JoinPath(const std::wstring& base, const std::wstring& child) {
     }
     result += child;
     return result;
+}
+
+std::wstring AccountsDirectory() {
+    return JoinPath(ModuleDirectory(), L"accounts");
 }
 
 std::optional<std::wstring> ReadEnv(const wchar_t* name) {
@@ -674,6 +727,40 @@ std::optional<std::string> DecodeJwtPayloadJson(const std::string& jwt) {
     return Base64UrlDecode(jwt.substr(firstDot + 1, secondDot - firstDot - 1));
 }
 
+std::optional<std::string> EmailFromAuthPayload(const jsonlite::Value& root) {
+    auto readEmail = [](const jsonlite::Value* node) -> std::optional<std::string> {
+        if (node == nullptr) {
+            return std::nullopt;
+        }
+        const jsonlite::Value* email = node->Find("email");
+        auto text = email != nullptr ? email->AsString() : std::nullopt;
+        if (!text.has_value() || text->empty()) {
+            return std::nullopt;
+        }
+        return std::string(*text);
+    };
+    if (auto email = readEmail(&root); email.has_value()) {
+        return email;
+    }
+    return readEmail(root.Find("https://api.openai.com/profile"));
+}
+
+std::optional<std::string> EmailFromIdToken(const std::string& idToken) {
+    if (idToken.empty()) {
+        return std::nullopt;
+    }
+    const std::optional<std::string> payloadJson = DecodeJwtPayloadJson(idToken);
+    if (!payloadJson.has_value()) {
+        return std::nullopt;
+    }
+    jsonlite::Parser parser(*payloadJson);
+    const std::optional<jsonlite::Value> root = parser.Parse();
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    return EmailFromAuthPayload(*root);
+}
+
 std::optional<long long> JwtExpUnixSeconds(const std::string& jwt) {
     std::optional<std::string> payloadJson = DecodeJwtPayloadJson(jwt);
     if (!payloadJson.has_value()) {
@@ -829,11 +916,11 @@ bool CredentialsNeedProactiveRefresh(const CodexUsageFetcher::AuthCredentials& c
 
 }  // namespace
 
-UsageSnapshot CodexUsageFetcher::Fetch() const {
+UsageSnapshot CodexUsageFetcher::Fetch(const std::wstring& authPath) const {
     UsageSnapshot snapshot;
 
     std::wstring errorMessage;
-    std::optional<AuthCredentials> credentials = ReadAuthCredentials(&errorMessage);
+    std::optional<AuthCredentials> credentials = ReadAuthCredentials(authPath, &errorMessage);
     if (!credentials.has_value()) {
         snapshot.errorMessage = errorMessage;
         return snapshot;
@@ -892,11 +979,11 @@ UsageSnapshot CodexUsageFetcher::Fetch() const {
     return snapshot;
 }
 
-TokenRefreshResult CodexUsageFetcher::ForceRefreshAuthTokens() const {
+TokenRefreshResult CodexUsageFetcher::ForceRefreshAuthTokens(const std::wstring& authPath) const {
     TokenRefreshResult result;
 
     std::wstring errorMessage;
-    std::optional<AuthCredentials> credentials = ReadAuthCredentials(&errorMessage);
+    std::optional<AuthCredentials> credentials = ReadAuthCredentials(authPath, &errorMessage);
     if (!credentials.has_value()) {
         result.errorMessage = errorMessage;
         return result;
@@ -916,7 +1003,9 @@ TokenRefreshResult CodexUsageFetcher::ForceRefreshAuthTokens() const {
     return result;
 }
 
-ConsumeResetCreditResult CodexUsageFetcher::ConsumeRateLimitResetCredit(const std::wstring& redeemRequestId) const {
+ConsumeResetCreditResult CodexUsageFetcher::ConsumeRateLimitResetCredit(
+    const std::wstring& redeemRequestId,
+    const std::wstring& authPath) const {
     ConsumeResetCreditResult result;
     if (redeemRequestId.empty()) {
         result.errorMessage = L"redeem_request_id is required";
@@ -924,7 +1013,7 @@ ConsumeResetCreditResult CodexUsageFetcher::ConsumeRateLimitResetCredit(const st
     }
 
     std::wstring errorMessage;
-    std::optional<AuthCredentials> credentials = ReadAuthCredentials(&errorMessage);
+    std::optional<AuthCredentials> credentials = ReadAuthCredentials(authPath, &errorMessage);
     if (!credentials.has_value()) {
         result.errorMessage = errorMessage;
         return result;
@@ -1012,32 +1101,190 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     return snapshot;
 }
 
-std::wstring CodexUsageFetcher::ResolveAuthJsonPath() const {
-    // Prefer auth.json next to the executable; fall back to CODEX_HOME / ~/.codex.
-    wchar_t modulePath[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) > 0) {
-        const std::wstring localAuth =
-            JoinPath(std::filesystem::path(modulePath).parent_path().wstring(), L"auth.json");
-        if (std::filesystem::exists(localAuth)) {
-            return localAuth;
+std::string AccountIdentity(const CodexUsageFetcher::AuthCredentials& credentials) {
+    if (!credentials.accountId.empty()) {
+        return "id:" + credentials.accountId;
+    }
+    if (const auto email = EmailFromIdToken(credentials.idToken); email.has_value()) {
+        std::string lower = *email;
+        for (char& ch : lower) {
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        return "email:" + lower;
+    }
+    return {};
+}
+
+std::wstring AccountLabel(
+    const CodexUsageFetcher::AuthCredentials& credentials,
+    const std::wstring& fallback) {
+    if (const auto email = EmailFromIdToken(credentials.idToken); email.has_value()) {
+        return Utf8ToWide(*email);
+    }
+    return fallback;
+}
+
+std::vector<CodexUsageFetcher::AuthAccount> CodexUsageFetcher::ListAuthAccounts() const {
+    std::vector<AuthAccount> accounts;
+    const std::wstring accountsDir = AccountsDirectory();
+    std::error_code error;
+    if (!std::filesystem::is_directory(accountsDir, error) || error) {
+        return accounts;
+    }
+
+    std::vector<std::filesystem::path> files;
+    std::filesystem::directory_iterator cursor(
+        accountsDir,
+        std::filesystem::directory_options::skip_permission_denied,
+        error);
+    if (error) {
+        return accounts;
+    }
+    const std::filesystem::directory_iterator end;
+    for (; cursor != end; cursor.increment(error)) {
+        if (error) {
+            break;
+        }
+        std::error_code fileError;
+        if (!cursor->is_regular_file(fileError) || fileError) {
+            continue;
+        }
+        if (_wcsicmp(cursor->path().extension().c_str(), L".json") != 0) {
+            continue;
+        }
+        files.push_back(cursor->path());
+    }
+
+    std::sort(files.begin(), files.end(), [](const std::filesystem::path& left, const std::filesystem::path& right) {
+        return _wcsicmp(left.filename().c_str(), right.filename().c_str()) < 0;
+    });
+    for (const std::filesystem::path& file : files) {
+        const std::wstring name = file.filename().wstring();
+        AuthAccount account;
+        account.id = L"accounts\\" + name;
+        account.path = file.wstring();
+        account.label = name;
+        if (const auto credentials = ReadAuthCredentials(account.path, nullptr); credentials.has_value()) {
+            account.label = AccountLabel(*credentials, name);
+        }
+        accounts.push_back(std::move(account));
+    }
+
+    for (size_t i = 0; i < accounts.size(); ++i) {
+        for (size_t j = 0; j < i; ++j) {
+            if (_wcsicmp(accounts[i].label.c_str(), accounts[j].label.c_str()) == 0) {
+                accounts[i].label = accounts[i].id;
+                accounts[j].label = accounts[j].id;
+            }
+        }
+    }
+    return accounts;
+}
+
+std::wstring CodexUsageFetcher::ResolveActiveAuthPath(const std::wstring& activeAuthId) const {
+    const std::vector<AuthAccount> accounts = ListAuthAccounts();
+    if (!activeAuthId.empty()) {
+        for (const AuthAccount& account : accounts) {
+            if (_wcsicmp(account.id.c_str(), activeAuthId.c_str()) == 0) {
+                return account.path;
+            }
+        }
+    }
+    if (!accounts.empty()) {
+        return accounts.front().path;
+    }
+    return {};
+}
+
+CodexUsageFetcher::AuthImportResult CodexUsageFetcher::ImportAuthFile(const std::wstring& sourcePath) const {
+    AuthImportResult result;
+    if (sourcePath.empty()) {
+        result.errorMessage = L"auth file is required";
+        return result;
+    }
+
+    std::wstring readError;
+    const std::optional<AuthCredentials> source = ReadAuthCredentials(sourcePath, &readError);
+    if (!source.has_value()) {
+        result.errorMessage = readError.empty() ? L"cannot read auth file" : readError;
+        return result;
+    }
+
+    for (const AuthAccount& account : ListAuthAccounts()) {
+        if (SameFilePath(account.path, sourcePath)) {
+            result.success = true;
+            result.authId = account.id;
+            return result;
         }
     }
 
-    if (auto codexHome = ReadEnv(L"CODEX_HOME"); codexHome.has_value() && !codexHome->empty()) {
-        return JoinPath(*codexHome, L"auth.json");
+    const std::wstring accountsDir = AccountsDirectory();
+    std::error_code mkdirError;
+    std::filesystem::create_directories(accountsDir, mkdirError);
+    if (mkdirError) {
+        result.errorMessage = L"cannot create accounts directory";
+        return result;
     }
 
-    if (auto userProfile = ReadEnv(L"USERPROFILE"); userProfile.has_value() && !userProfile->empty()) {
-        return JoinPath(JoinPath(*userProfile, L".codex"), L"auth.json");
+    std::wstring destPath;
+    std::wstring destId;
+    const std::string identity = AccountIdentity(*source);
+    if (!identity.empty()) {
+        for (const AuthAccount& account : ListAuthAccounts()) {
+            const std::optional<AuthCredentials> existing = ReadAuthCredentials(account.path, nullptr);
+            if (!existing.has_value()) {
+                continue;
+            }
+            if (AccountIdentity(*existing) == identity) {
+                destPath = account.path;
+                destId = account.id;
+                break;
+            }
+        }
     }
 
-    return L".codex\\auth.json";
+    if (destPath.empty()) {
+        const std::wstring stem = SanitizeFileStem(
+            AccountLabel(*source, std::filesystem::path(sourcePath).stem().wstring()));
+        std::wstring name = stem + L".json";
+        destPath = JoinPath(accountsDir, name);
+        for (int suffix = 2; suffix < 1000; ++suffix) {
+            std::error_code existsError;
+            if (!std::filesystem::exists(destPath, existsError) || existsError) {
+                break;
+            }
+            name = stem + L"-" + std::to_wstring(suffix) + L".json";
+            destPath = JoinPath(accountsDir, name);
+        }
+        destId = L"accounts\\" + std::filesystem::path(destPath).filename().wstring();
+    }
+
+    if (SameFilePath(sourcePath, destPath)) {
+        result.success = true;
+        result.authId = destId;
+        return result;
+    }
+    if (!CopyFileW(sourcePath.c_str(), destPath.c_str(), FALSE)) {
+        result.errorMessage = L"cannot copy auth file into accounts";
+        return result;
+    }
+
+    result.success = true;
+    result.authId = destId;
+    return result;
 }
 
 std::optional<CodexUsageFetcher::AuthCredentials> CodexUsageFetcher::ReadAuthCredentials(
+    const std::wstring& authPath,
     std::wstring* errorMessage) const {
-    const std::wstring authPath = ResolveAuthJsonPath();
-    std::optional<std::string> jsonText = LoadFileUtf8(authPath, errorMessage);
+    if (authPath.empty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = L"Import an account first";
+        }
+        return std::nullopt;
+    }
+    const std::wstring& path = authPath;
+    std::optional<std::string> jsonText = LoadFileUtf8(path, errorMessage);
     if (!jsonText.has_value()) {
         return std::nullopt;
     }
@@ -1075,7 +1322,7 @@ std::optional<CodexUsageFetcher::AuthCredentials> CodexUsageFetcher::ReadAuthCre
     }
 
     AuthCredentials credentials;
-    credentials.authPath = authPath;
+    credentials.authPath = path;
     credentials.accessToken = std::move(*token);
 
     if (auto accountId = AuthStringField(tokens, *root, "account_id"); accountId.has_value()) {
