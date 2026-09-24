@@ -30,7 +30,6 @@ endif()
 
 set(USAGE_BAR_SOURCES
     src/AccountLibrary.cpp
-    src/AppFeatures.cpp
     src/AppUpdate.cpp
     src/BrowserSignIn.cpp
     src/GrokBilling.cpp
@@ -44,6 +43,7 @@ set(USAGE_BAR_SOURCES
 add_executable(CodexUsageBar WIN32
     src/main.cpp
     src/AppBarWindow.cpp
+    src/AppFeatures.cpp
     src/CodexUsageFetcher.cpp
     ${USAGE_BAR_SOURCES}
 )
