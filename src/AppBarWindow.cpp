@@ -3103,13 +3103,23 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
             };
             std::vector<AccountQuotaRow> tableRows = summaryRows_;
             std::stable_sort(tableRows.begin(), tableRows.end(), [](const AccountQuotaRow& leftRow, const AccountQuotaRow& rightRow) {
-                const auto usedOf = [](const AccountQuotaRow& row) {
+                const auto resetOf = [](const AccountQuotaRow& row) -> long long {
                     if (row.loading || !row.hasQuota) {
-                        return -1;
+                        return 0;
                     }
-                    return ClampInt(100 - row.remainingPercent, 0, 100);
+                    const long long resetAt = row.resetAtUnixSeconds > 0
+                        ? row.resetAtUnixSeconds
+                        : Iso8601ToUnix(row.resetIso);
+                    return resetAt > 0 ? resetAt : 0;
                 };
-                return usedOf(leftRow) > usedOf(rightRow);
+                const long long leftReset = resetOf(leftRow);
+                const long long rightReset = resetOf(rightRow);
+                const bool leftKnown = leftReset > 0;
+                const bool rightKnown = rightReset > 0;
+                if (leftKnown != rightKnown) {
+                    return leftKnown;
+                }
+                return leftReset < rightReset;
             });
             const int bodyRows = std::max(1, static_cast<int>(tableRows.size()));
             RECT table = MakeRect(left, y, right, y + rowH * (bodyRows + 1));
