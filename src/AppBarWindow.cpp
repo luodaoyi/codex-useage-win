@@ -1,11 +1,13 @@
 #include "AppBarWindow.h"
 #include "AppVersion.h"
+#include "BrandIcons.h"
 #include "BrowserSignIn.h"
 #include "TextUtil.h"
 
 #include <commdlg.h>
 #include <ShlObj.h>
 #include <shellapi.h>
+#include <wincodec.h>
 #include <winreg.h>
 #include <windowsx.h>
 
@@ -88,6 +90,7 @@ constexpr UINT kUiAccounts = 81;
 constexpr UINT kUiCloseSheet = 82;
 constexpr UINT kUiPrevAccount = 83;
 constexpr UINT kUiNextAccount = 84;
+constexpr UINT kUiSummary = 85;
 constexpr UINT kCommandAccountBase = 1000;
 constexpr UINT kMaxAuthMenuAccounts = 64;
 constexpr int kModelScoresPageSize = 10;
@@ -364,6 +367,8 @@ bool AppBarWindow::Create() {
     releaseCheckCountdownSeconds_ = kReleaseCheckIntervalSeconds;
     SetTimer(hwnd_, kCountdownTimerId, 1000, nullptr);
     RestartRefreshTimer();
+    SetTimer(hwnd_, kTokenMaintenanceTimerId, static_cast<UINT>(kTokenMaintenanceIntervalSeconds * 1000), nullptr);
+    RequestTokenMaintenance();
     RequestRefresh(true);
     RequestLatestReleaseCheck(true);
     if (showModelScores_) {
@@ -418,6 +423,8 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             } else if (wParam == kRefreshTimerId) {
                 refreshCountdownSeconds_ = refreshIntervalSeconds_;
                 RequestRefresh(false);
+            } else if (wParam == kTokenMaintenanceTimerId) {
+                RequestTokenMaintenance();
             } else if (wParam == kResetConfirmTimerId) {
                 KillTimer(hwnd_, kResetConfirmTimerId);
                 resetCreditConfirmStep_ = 0;
@@ -525,17 +532,8 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             }
             return 0;
 
-        case WM_CONTEXTMENU: {
-            POINT point = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            if (point.x == -1 && point.y == -1) {
-                RECT windowRect = {};
-                GetWindowRect(hwnd_, &windowRect);
-                point.x = windowRect.left + ScaleForDpi(hwnd_, 18);
-                point.y = windowRect.top + ScaleForDpi(hwnd_, 18);
-            }
-            ShowContextMenu(point);
+        case WM_CONTEXTMENU:
             return 0;
-        }
 
         case kUsageUpdatedMessage:
             OnUsageUpdated(reinterpret_cast<UsageSnapshot*>(lParam));
@@ -551,6 +549,10 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
 
         case kTokenRefreshedMessage:
             OnTokenRefreshed(reinterpret_cast<TokenRefreshResult*>(lParam));
+            return 0;
+
+        case kTokenMaintenanceMessage:
+            OnTokenMaintenance(reinterpret_cast<TokenMaintenanceReport*>(lParam));
             return 0;
 
         case kModelScoresUpdatedMessage:
@@ -599,6 +601,14 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
 
+        case kSummaryRowMessage:
+            OnSummaryRowUpdated(static_cast<int>(wParam), reinterpret_cast<AccountQuotaRow*>(lParam));
+            return 0;
+
+        case kSummaryDoneMessage:
+            OnSummaryRefreshDone(static_cast<int>(wParam));
+            return 0;
+
         case kSessionScanMessage: {
             std::unique_ptr<SessionScan> result(reinterpret_cast<SessionScan*>(lParam));
             sessionScanInFlight_ = false;
@@ -615,6 +625,7 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             KillTimer(hwnd_, kResetConfirmTimerId);
             KillTimer(hwnd_, kModelScoresTimerId);
             KillTimer(hwnd_, kResetStatusTimerId);
+            KillTimer(hwnd_, kTokenMaintenanceTimerId);
             SaveSettings();
             SaveFeatureSettings();
             DiscardTextFormats();
@@ -682,6 +693,13 @@ int AppBarWindow::GetMinimumWidgetWidth() const {
     if (taskbarMode_) {
         return ScaleForDpi(hwnd_, kTaskbarMinimumWidgetWidth);
     }
+    if (surface_ == Surface::Summary) {
+        const int summaryWidth = ScaleForDpi(hwnd_, 420);
+        if (showModelScores_) {
+            return std::max(summaryWidth, ScaleForDpi(hwnd_, 460));
+        }
+        return summaryWidth;
+    }
     if (showModelScores_) {
         return ScaleForDpi(hwnd_, simpleMode_ ? 360 : 460);
     }
@@ -692,12 +710,16 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
     if (taskbarMode_) {
         return CalculateTaskbarWidgetHeight(hwnd_);
     }
-    const int chrome = ScaleForDpi(hwnd_, 78);
-    const int dropExtra = accountDropOpen_
+    const int chrome = ScaleForDpi(hwnd_, surface_ == Surface::Summary ? 44 : 78);
+    const int dropExtra = surface_ != Surface::Summary && accountDropOpen_
         ? ScaleForDpi(hwnd_, 8 + 32 * std::max(1, static_cast<int>(accounts_.List(provider_).size())))
         : 0;
+    if (surface_ == Surface::Summary) {
+        return chrome + SummaryContentHeight() + GetModelScoresPanelHeight();
+    }
     if (surface_ == Surface::Settings) {
-        return chrome + ScaleForDpi(hwnd_, 720) + dropExtra;
+        const int accountRows = static_cast<int>(accounts_.List(L"").size());
+        return chrome + ScaleForDpi(hwnd_, 760 + accountRows * 30) + dropExtra;
     }
     if (surface_ == Surface::Accounts) {
         const int count = static_cast<int>(accounts_.List(provider_).size());
@@ -1445,7 +1467,7 @@ HRESULT AppBarWindow::CreateDeviceResources() {
     if (!renderTarget_) {
         const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
             D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
             96.0f,
             96.0f,
             D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE);
@@ -1458,12 +1480,68 @@ HRESULT AppBarWindow::CreateDeviceResources() {
         if (FAILED(hr)) {
             return hr;
         }
+        EnsureBrandIcons();
     }
 
     return EnsureTextFormats();
 }
 
+HRESULT AppBarWindow::EnsureBrandIcons() {
+    if (codexIcon_ && grokIcon_) {
+        return S_OK;
+    }
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninitCom = com == S_OK;
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.GetAddressOf()));
+    auto load = [&](const unsigned char* bytes, size_t size, ID2D1Bitmap** bitmap) -> HRESULT {
+        Microsoft::WRL::ComPtr<IWICStream> stream;
+        HRESULT status = factory->CreateStream(stream.GetAddressOf());
+        if (FAILED(status)) {
+            return status;
+        }
+        status = stream->InitializeFromMemory(const_cast<BYTE*>(bytes), static_cast<DWORD>(size));
+        if (FAILED(status)) {
+            return status;
+        }
+        Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+        status = factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, decoder.GetAddressOf());
+        if (FAILED(status)) {
+            return status;
+        }
+        Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+        status = decoder->GetFrame(0, frame.GetAddressOf());
+        if (FAILED(status)) {
+            return status;
+        }
+        Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+        status = factory->CreateFormatConverter(converter.GetAddressOf());
+        if (FAILED(status)) {
+            return status;
+        }
+        status = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+        if (FAILED(status)) {
+            return status;
+        }
+        return renderTarget_->CreateBitmapFromWicBitmap(converter.Get(), nullptr, bitmap);
+    };
+    if (SUCCEEDED(hr)) {
+        if (!codexIcon_) {
+            load(kCodexIconPng, kCodexIconPngSize, codexIcon_.GetAddressOf());
+        }
+        if (!grokIcon_) {
+            load(kGrokIconPng, kGrokIconPngSize, grokIcon_.GetAddressOf());
+        }
+    }
+    if (uninitCom) {
+        CoUninitialize();
+    }
+    return hr;
+}
+
 void AppBarWindow::DiscardDeviceResources() {
+    codexIcon_.Reset();
+    grokIcon_.Reset();
     solidBrush_.Reset();
     renderTarget_.Reset();
 }
@@ -1554,6 +1632,11 @@ void AppBarWindow::RequestRefresh(bool force) {
 
     refreshCountdownSeconds_ = refreshIntervalSeconds_;
     RestartRefreshTimer();
+    if (surface_ == Surface::Summary) {
+        refreshInFlight_ = false;
+        RequestSummaryRefresh();
+        return;
+    }
     if (provider_ == L"grok") {
         refreshInFlight_ = false;
         RequestGrokRefresh();
@@ -1594,6 +1677,147 @@ void AppBarWindow::OnUsageUpdated(UsageSnapshot* snapshot) {
     if (!taskbarMode_) {
         FitWindowToContent();
     }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+int AppBarWindow::SummaryContentHeight() const {
+    const int count = static_cast<int>(accounts_.List(L"").size());
+    int height = 10;
+    height += 24;
+    height += std::max(1, count) * 22;
+    height += 22;
+    return ScaleForDpi(hwnd_, height);
+}
+
+void AppBarWindow::SeedSummaryRows() {
+    const std::vector<AccountEntry> accounts = accounts_.List(L"");
+    std::vector<AccountQuotaRow> next;
+    next.reserve(accounts.size());
+    for (const AccountEntry& account : accounts) {
+        AccountQuotaRow row;
+        row.id = account.id;
+        row.label = account.label;
+        row.alias = account.alias;
+        row.email = account.email;
+        row.provider = account.provider.empty() ? L"codex" : account.provider;
+        row.loading = true;
+        for (const AccountQuotaRow& previous : summaryRows_) {
+            if (_wcsicmp(previous.id.c_str(), account.id.c_str()) == 0 && !previous.loading) {
+                row = previous;
+                row.label = account.label;
+                row.alias = account.alias;
+                row.email = account.email;
+                row.provider = account.provider.empty() ? L"codex" : account.provider;
+                break;
+            }
+        }
+        const bool active = !activeAuthId_.empty()
+            && _wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0;
+        if (row.loading && active && _wcsicmp(row.provider.c_str(), L"grok") == 0 && grok_.success) {
+            row.loading = false;
+            row.success = true;
+            const int remaining = GrokWeeklyRemainingPercent(grok_);
+            if (remaining >= 0) {
+                row.hasQuota = true;
+                row.remainingPercent = remaining;
+            }
+            row.resetIso = grok_.periodEnd;
+        } else if (row.loading && active && _wcsicmp(row.provider.c_str(), L"codex") == 0
+            && snapshot_.success && snapshot_.weekly.available) {
+            row.loading = false;
+            row.success = true;
+            row.hasQuota = true;
+            row.remainingPercent = snapshot_.weekly.remainingPercent;
+            row.resetAtUnixSeconds = snapshot_.weekly.resetAtUnixSeconds;
+        }
+        next.push_back(std::move(row));
+    }
+    summaryRows_ = std::move(next);
+}
+
+void AppBarWindow::RequestSummaryRefresh() {
+    SeedSummaryRows();
+    if (hwnd_ != nullptr && !taskbarMode_) {
+        FitWindowToContent();
+    }
+    if (hwnd_ != nullptr) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    if (summaryInFlight_.exchange(true)) {
+        return;
+    }
+    const int generation = ++summaryGeneration_;
+    const HWND target = hwnd_;
+    const std::vector<AccountEntry> accounts = accounts_.List(L"");
+    std::thread([target, generation, accounts]() {
+        CodexUsageFetcher fetcher;
+        for (const AccountEntry& account : accounts) {
+            auto* row = new AccountQuotaRow();
+            row->id = account.id;
+            row->label = account.label;
+            row->alias = account.alias;
+            row->email = account.email;
+            row->provider = account.provider.empty() ? L"codex" : account.provider;
+            row->loading = false;
+            if (_wcsicmp(row->provider.c_str(), L"grok") == 0) {
+                const GrokSnapshot snap = FetchGrokBillingFile(account.path);
+                row->success = snap.success;
+                row->error = snap.error;
+                const int remaining = GrokWeeklyRemainingPercent(snap);
+                if (remaining >= 0) {
+                    row->hasQuota = true;
+                    row->remainingPercent = remaining;
+                }
+                row->resetIso = snap.periodEnd;
+            } else {
+                const UsageSnapshot snap = fetcher.Fetch(account.path);
+                row->success = snap.success;
+                row->error = snap.errorMessage;
+                if (snap.weekly.available) {
+                    row->hasQuota = true;
+                    row->remainingPercent = snap.weekly.remainingPercent;
+                    row->resetAtUnixSeconds = snap.weekly.resetAtUnixSeconds;
+                }
+            }
+            if (target == nullptr || !PostMessageW(
+                    target,
+                    kSummaryRowMessage,
+                    static_cast<WPARAM>(generation),
+                    reinterpret_cast<LPARAM>(row))) {
+                delete row;
+                break;
+            }
+        }
+        if (target != nullptr) {
+            PostMessageW(target, kSummaryDoneMessage, static_cast<WPARAM>(generation), 0);
+        }
+    }).detach();
+}
+
+void AppBarWindow::OnSummaryRowUpdated(int generation, AccountQuotaRow* row) {
+    std::unique_ptr<AccountQuotaRow> holder(row);
+    if (holder == nullptr || generation != summaryGeneration_) {
+        return;
+    }
+    for (AccountQuotaRow& existing : summaryRows_) {
+        if (_wcsicmp(existing.id.c_str(), holder->id.c_str()) == 0) {
+            existing = *holder;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+    }
+    summaryRows_.push_back(*holder);
+    if (!taskbarMode_) {
+        FitWindowToContent();
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void AppBarWindow::OnSummaryRefreshDone(int generation) {
+    if (generation != summaryGeneration_) {
+        return;
+    }
+    summaryInFlight_ = false;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1687,7 +1911,11 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
             if (hit.rect.right <= hit.rect.left || !PtInRect(&hit.rect, clientPoint)) {
                 continue;
             }
-            if (!hit.accountId.empty()) {
+            if (hit.command == kCommandDeleteAccount && !hit.accountId.empty()) {
+                DeleteAccountById(hit.accountId);
+            } else if (hit.command == kCommandAlias && !hit.accountId.empty()) {
+                RenameAccountById(hit.accountId);
+            } else if (!hit.accountId.empty()) {
                 for (const AccountEntry& account : accounts_.List(L"")) {
                     if (_wcsicmp(account.id.c_str(), hit.accountId.c_str()) != 0) {
                         continue;
@@ -1705,11 +1933,28 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
                 }
             } else if (hit.command == kUiSettings) {
                 accountDropOpen_ = false;
+                const bool fromSummary = surface_ == Surface::Summary;
                 surface_ = surface_ == Surface::Settings ? Surface::Usage : Surface::Settings;
+                if (fromSummary && surface_ == Surface::Usage) {
+                    RequestRefresh(true);
+                }
+            } else if (hit.command == kUiSummary) {
+                accountDropOpen_ = false;
+                if (surface_ == Surface::Summary) {
+                    surface_ = Surface::Usage;
+                    RequestRefresh(true);
+                } else {
+                    surface_ = Surface::Summary;
+                    RequestSummaryRefresh();
+                }
             } else if (hit.command == kUiAccounts) {
                 accountDropOpen_ = !accountDropOpen_;
             } else if (hit.command == kUiCloseSheet) {
+                const bool fromSummary = surface_ == Surface::Summary;
                 surface_ = Surface::Usage;
+                if (fromSummary) {
+                    RequestRefresh(true);
+                }
             } else {
                 if (hit.command == kCommandProviderCodex || hit.command == kCommandProviderGrok) {
                     surface_ = Surface::Usage;
@@ -1890,6 +2135,109 @@ void AppBarWindow::ImportAccount() {
     RequestRefresh(true);
 }
 
+void AppBarWindow::RequestTokenMaintenance() {
+    if (tokenMaintenanceInFlight_.exchange(true)) {
+        return;
+    }
+    const long long now = static_cast<long long>(std::time(nullptr));
+    std::vector<std::wstring> skip;
+    for (const auto& item : tokenRefreshNotBefore_) {
+        if (item.second > now) {
+            skip.push_back(item.first);
+        }
+    }
+    const std::vector<AccountEntry> accounts = accounts_.List(L"");
+    const HWND target = hwnd_;
+    std::thread([target, accounts, skip]() {
+        auto* report = new TokenMaintenanceReport();
+        CodexUsageFetcher fetcher;
+        auto cooling = [&](const std::wstring& id) {
+            for (const std::wstring& item : skip) {
+                if (_wcsicmp(item.c_str(), id.c_str()) == 0) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        auto noteFailure = [&](const std::wstring& id, const std::wstring& error) {
+            ++report->failed;
+            if (report->error.empty()) {
+                report->error = error;
+            }
+            const bool revoked = error.find(L"invalid_grant") != std::wstring::npos
+                || error.find(L"revoked") != std::wstring::npos
+                || error.find(L"Revoked") != std::wstring::npos;
+            if (revoked) {
+                report->revokedIds.push_back(id);
+            } else {
+                report->failedIds.push_back(id);
+            }
+        };
+        for (const AccountEntry& account : accounts) {
+            if (cooling(account.id)) {
+                continue;
+            }
+            if (_wcsicmp(account.provider.c_str(), L"grok") == 0) {
+                const GrokTokenRefreshResult refreshed = RefreshGrokAuthIfNeeded(account.path, kGrokRefreshLeadSeconds, false);
+                if (!refreshed.attempted) {
+                    continue;
+                }
+                if (refreshed.success) {
+                    ++report->refreshed;
+                } else {
+                    noteFailure(account.id, refreshed.error);
+                }
+            } else {
+                const TokenRefreshResult refreshed = fetcher.RefreshAuthIfNeeded(account.path);
+                if (!refreshed.attempted) {
+                    continue;
+                }
+                if (refreshed.success) {
+                    ++report->refreshed;
+                } else {
+                    noteFailure(account.id, refreshed.errorMessage);
+                }
+            }
+        }
+        if (target == nullptr || !PostMessageW(target, kTokenMaintenanceMessage, 0, reinterpret_cast<LPARAM>(report))) {
+            delete report;
+        }
+    }).detach();
+}
+
+void AppBarWindow::OnTokenMaintenance(TokenMaintenanceReport* report) {
+    std::unique_ptr<TokenMaintenanceReport> holder(report);
+    tokenMaintenanceInFlight_ = false;
+    if (holder == nullptr) {
+        return;
+    }
+    const long long now = static_cast<long long>(std::time(nullptr));
+    auto pushUntil = [&](const std::wstring& id, long long until) {
+        for (auto& item : tokenRefreshNotBefore_) {
+            if (_wcsicmp(item.first.c_str(), id.c_str()) == 0) {
+                item.second = until;
+                return;
+            }
+        }
+        tokenRefreshNotBefore_.emplace_back(id, until);
+    };
+    for (const std::wstring& id : holder->revokedIds) {
+        pushUntil(id, now + 6LL * 60 * 60);
+    }
+    for (const std::wstring& id : holder->failedIds) {
+        pushUntil(id, now + 5LL * 60);
+    }
+    if (holder->refreshed > 0) {
+        resetCreditActionMessage_ = std::wstring(LocalizeText(L"Refreshed ", L"已自动刷新 "))
+            + std::to_wstring(holder->refreshed)
+            + LocalizeText(L" token(s)", L" 个 Token");
+        RequestRefresh(true);
+    } else if (holder->failed > 0 && !holder->error.empty()) {
+        resetCreditActionMessage_ = holder->error;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 void AppBarWindow::RequestRefreshToken() {
     if (tokenRefreshInFlight_.exchange(true)) {
         return;
@@ -1900,9 +2248,21 @@ void AppBarWindow::RequestRefreshToken() {
 
     const HWND target = hwnd_;
     const std::wstring authPath = ActiveAuthPath();
-    std::thread([this, target, authPath]() {
-        auto* result = new TokenRefreshResult(fetcher_.ForceRefreshAuthTokens(authPath));
-        PostMessageW(target, kTokenRefreshedMessage, 0, reinterpret_cast<LPARAM>(result));
+    const bool grok = provider_ == L"grok";
+    std::thread([target, authPath, grok]() {
+        auto* result = new TokenRefreshResult();
+        if (grok) {
+            const GrokTokenRefreshResult refreshed = RefreshGrokAuthIfNeeded(authPath, 0, true);
+            result->attempted = refreshed.attempted;
+            result->success = refreshed.success;
+            result->wroteAuthFile = refreshed.success && refreshed.attempted;
+            result->errorMessage = refreshed.error;
+        } else {
+            *result = CodexUsageFetcher().ForceRefreshAuthTokens(authPath);
+        }
+        if (!PostMessageW(target, kTokenRefreshedMessage, 0, reinterpret_cast<LPARAM>(result))) {
+            delete result;
+        }
     }).detach();
 }
 
@@ -2464,7 +2824,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     if (!taskbarMode_) {
         fillRect(clientRect, background);
         drawRectBorder(clientRect, border);
-        const int chromeH = ScaleForDpi(hwnd_, 78);
+        const int chromeH = ScaleForDpi(hwnd_, surface_ == Surface::Summary ? 44 : 78);
         const int rowH = ScaleForDpi(hwnd_, 28);
         const int gap = ScaleForDpi(hwnd_, 6);
         const int left = clientRect.left + ScaleForDpi(hwnd_, 14);
@@ -2484,14 +2844,29 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
             addHit(rect, command);
         };
-        RECT codexTab = MakeRect(left, row1, left + ScaleForDpi(hwnd_, 78), row1 + rowH);
-        RECT grokTab = MakeRect(codexTab.right + gap, row1, codexTab.right + gap + ScaleForDpi(hwnd_, 72), row1 + rowH);
-        chip(codexTab, L"Codex", provider_ == L"codex" && surface_ != Surface::Settings, kCommandProviderCodex);
-        chip(grokTab, L"Grok", provider_ == L"grok" && surface_ != Surface::Settings, kCommandProviderGrok);
-        RECT settingsRect = MakeRect(right - ScaleForDpi(hwnd_, 118), row1, right - ScaleForDpi(hwnd_, 58), row1 + rowH);
-        RECT refreshRect = MakeRect(right - ScaleForDpi(hwnd_, 52), row1, right, row1 + rowH);
-        chip(settingsRect, surface_ == Surface::Settings ? LocalizeText(L"Done", L"完成") : LocalizeText(L"Settings", L"设置"), surface_ == Surface::Settings, kUiSettings);
-        chip(refreshRect, LocalizeText(L"Reload", L"刷新"), false, kCommandRefresh);
+        RECT codexTab = MakeRect(left, row1, left + ScaleForDpi(hwnd_, 70), row1 + rowH);
+        RECT grokTab = MakeRect(codexTab.right + gap, row1, codexTab.right + gap + ScaleForDpi(hwnd_, 62), row1 + rowH);
+        chip(codexTab, L"Codex", provider_ == L"codex" && surface_ == Surface::Usage, kCommandProviderCodex);
+        chip(grokTab, L"Grok", provider_ == L"grok" && surface_ == Surface::Usage, kCommandProviderGrok);
+        const std::wstring summaryLabel = LocalizeText(L"Summary", L"汇总");
+        const std::wstring settingsLabel = surface_ == Surface::Settings
+            ? LocalizeText(L"Done", L"完成")
+            : LocalizeText(L"Settings", L"设置");
+        const std::wstring refreshLabel = LocalizeText(L"Reload", L"刷新");
+        auto chipWidth = [&](const std::wstring& text) {
+            return std::max(
+                ScaleForDpi(hwnd_, 48),
+                static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), text))) + ScaleForDpi(hwnd_, 18));
+        };
+        const int refreshW = chipWidth(refreshLabel);
+        const int settingsW = chipWidth(settingsLabel);
+        const int summaryW = chipWidth(summaryLabel);
+        RECT refreshRect = MakeRect(right - refreshW, row1, right, row1 + rowH);
+        RECT settingsRect = MakeRect(refreshRect.left - gap - settingsW, row1, refreshRect.left - gap, row1 + rowH);
+        RECT summaryRect = MakeRect(settingsRect.left - gap - summaryW, row1, settingsRect.left - gap, row1 + rowH);
+        chip(summaryRect, summaryLabel, surface_ == Surface::Summary, kUiSummary);
+        chip(settingsRect, settingsLabel, surface_ == Surface::Settings, kUiSettings);
+        chip(refreshRect, refreshLabel, false, kCommandRefresh);
         const std::vector<AccountEntry> providerAccounts = accounts_.List(provider_);
         std::wstring accountLabel = LocalizeText(L"Import an account", L"导入账号");
         for (const AccountEntry& account : providerAccounts) {
@@ -2500,6 +2875,9 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 break;
             }
         }
+        if (surface_ == Surface::Summary) {
+            accountDropRect_ = {};
+        } else {
         accountDropRect_ = MakeRect(left, row2, right, row2 + rowH);
         fillRect(accountDropRect_, accountDropOpen_
             ? (lightTheme_ ? RGB(232, 236, 233) : RGB(46, 54, 49))
@@ -2514,8 +2892,9 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         drawTextBlock(textFormatFoot_.Get(), accountDropOpen_ ? L"^" : L"v", chevronRect, textSecondary,
             DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
         addHit(accountDropRect_, kUiAccounts);
+        }
         clientRect.top += chromeH;
-        if (surface_ != Surface::Usage) {
+        if (surface_ == Surface::Accounts || surface_ == Surface::Settings) {
             fillRect(clientRect, background);
             int y = clientRect.top + ScaleForDpi(hwnd_, 8);
             const int chipH = ScaleForDpi(hwnd_, 28);
@@ -2564,12 +2943,48 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 }, [](UINT) { return false; });
             } else {
                 section(LocalizeText(L"Account", L"账号"));
+                const std::vector<AccountEntry> allAccounts = accounts_.List(L"");
+                if (allAccounts.empty()) {
+                    RECT empty = MakeRect(left, y, right, y + chipH);
+                    drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"No accounts imported yet", L"还没有导入账号"), empty, textSecondary,
+                        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                    y += chipH + gap;
+                }
+                for (const AccountEntry& account : allAccounts) {
+                    const int rowH = ScaleForDpi(hwnd_, 28);
+                    const int deleteW = ScaleForDpi(hwnd_, 52);
+                    const int aliasW = ScaleForDpi(hwnd_, 52);
+                    const int typeW = ScaleForDpi(hwnd_, 58);
+                    const bool grokAccount = _wcsicmp(account.provider.c_str(), L"grok") == 0;
+                    RECT row = MakeRect(left, y, right, y + rowH);
+                    fillRect(row, trackColor);
+                    RECT typeRect = MakeRect(row.left, row.top, row.left + typeW, row.bottom);
+                    fillRect(typeRect, grokAccount
+                        ? (lightTheme_ ? RGB(232, 236, 255) : RGB(36, 44, 72))
+                        : (lightTheme_ ? RGB(232, 246, 236) : RGB(31, 58, 46)));
+                    drawTextBlock(textFormatFoot_.Get(), grokAccount ? L"Grok" : L"Codex", typeRect, textPrimary,
+                        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                    const std::wstring who = account.email.empty() ? account.label : account.email;
+                    const std::wstring shown = account.alias.empty() ? who : (account.alias + L"  ·  " + who);
+                    RECT nameRect = MakeRect(typeRect.right + ScaleForDpi(hwnd_, 8), row.top, row.right - deleteW - aliasW - gap * 2, row.bottom);
+                    drawTextBlock(textFormatFoot_.Get(), shown, nameRect, textPrimary,
+                        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                    RECT aliasRect = MakeRect(row.right - deleteW - gap - aliasW, row.top, row.right - deleteW - gap, row.bottom);
+                    fillRect(aliasRect, lightTheme_ ? RGB(232, 236, 233) : RGB(46, 54, 49));
+                    drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Alias", L"别称"), aliasRect, textPrimary,
+                        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                    addHit(aliasRect, kCommandAlias, account.id);
+                    RECT deleteRect = MakeRect(row.right - deleteW, row.top, row.right, row.bottom);
+                    fillRect(deleteRect, lightTheme_ ? RGB(255, 236, 232) : RGB(92, 42, 36));
+                    drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Delete", L"删除"), deleteRect, lightTheme_ ? RGB(176, 48, 32) : RGB(255, 180, 168),
+                        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                    addHit(deleteRect, kCommandDeleteAccount, account.id);
+                    y += rowH + gap;
+                }
                 wrapChips({
                     {LocalizeText(L"Import", L"导入文件"), kCommandImportAccount},
                     {LocalizeText(L"Paste", L"粘贴"), kCommandPasteImport},
                     {LocalizeText(L"Browser", L"浏览器登录"), kCommandBrowserLogin},
-                    {LocalizeText(L"Rename", L"重命名"), kCommandAlias},
-                    {LocalizeText(L"Delete", L"删除"), kCommandDeleteAccount},
                 }, [](UINT) { return false; });
                 section(LocalizeText(L"Display", L"显示"));
                 wrapChips({
@@ -2664,6 +3079,119 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 }, [](UINT) { return false; });
             }
             chip(MakeRect(left, y, left + ScaleForDpi(hwnd_, 120), y + chipH), LocalizeText(L"Back to usage", L"返回用量"), false, kUiCloseSheet);
+            return;
+        }
+        if (surface_ == Surface::Summary) {
+            fillRect(clientRect, background);
+            int y = clientRect.top + ScaleForDpi(hwnd_, 6);
+            const int rowH = ScaleForDpi(hwnd_, 22);
+            const int iconSize = ScaleForDpi(hwnd_, 16);
+            const int nameW = iconSize + ScaleForDpi(hwnd_, 8)
+                + static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), L"Grok  账号别称")))
+                + ScaleForDpi(hwnd_, 8);
+            const int timeW = static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), L"00/00 00:00")))
+                + ScaleForDpi(hwnd_, 14);
+            const int percentW = static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), L"100.0%")))
+                + ScaleForDpi(hwnd_, 8);
+            auto drawPlatformIcon = [&](bool grokRowIcon, float centerX, float centerY, float size) {
+                ID2D1Bitmap* bitmap = grokRowIcon ? grokIcon_.Get() : codexIcon_.Get();
+                if (bitmap == nullptr) {
+                    return;
+                }
+                const D2D1_RECT_F dest = D2D1::RectF(centerX - size * 0.5f, centerY - size * 0.5f, centerX + size * 0.5f, centerY + size * 0.5f);
+                renderTarget_->DrawBitmap(bitmap, dest, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            };
+            std::vector<AccountQuotaRow> tableRows = summaryRows_;
+            std::stable_sort(tableRows.begin(), tableRows.end(), [](const AccountQuotaRow& leftRow, const AccountQuotaRow& rightRow) {
+                const auto usedOf = [](const AccountQuotaRow& row) {
+                    if (row.loading || !row.hasQuota) {
+                        return -1;
+                    }
+                    return ClampInt(100 - row.remainingPercent, 0, 100);
+                };
+                return usedOf(leftRow) > usedOf(rightRow);
+            });
+            const int bodyRows = std::max(1, static_cast<int>(tableRows.size()));
+            RECT table = MakeRect(left, y, right, y + rowH * (bodyRows + 1));
+            drawRectBorder(table, border);
+            const int nameRight = table.left + nameW;
+            const int timeLeft = table.right - timeW;
+            auto vline = [&](int x, int top, int bottom) {
+                fillRect(MakeRect(x, top, x + 1, bottom), border);
+            };
+            auto hline = [&](int lineY) {
+                fillRect(MakeRect(table.left, lineY, table.right, lineY + 1), border);
+            };
+            RECT headName = MakeRect(table.left + ScaleForDpi(hwnd_, 6), table.top, nameRight, table.top + rowH);
+            RECT headUsed = MakeRect(nameRight + ScaleForDpi(hwnd_, 6), table.top, timeLeft, table.top + rowH);
+            RECT headTime = MakeRect(timeLeft, table.top, table.right - ScaleForDpi(hwnd_, 6), table.top + rowH);
+            drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Account", L"账号"), headName, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Used", L"已用"), headUsed, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Reset", L"重置"), headTime, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            hline(table.top + rowH);
+            vline(nameRight, table.top, table.bottom);
+            vline(timeLeft, table.top, table.bottom);
+            if (tableRows.empty()) {
+                RECT empty = MakeRect(table.left + ScaleForDpi(hwnd_, 6), table.top + rowH, table.right - ScaleForDpi(hwnd_, 6), table.bottom);
+                drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"No accounts imported yet", L"还没有导入账号"), empty, textSecondary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            }
+            for (int index = 0; index < static_cast<int>(tableRows.size()); ++index) {
+                const AccountQuotaRow& row = tableRows[static_cast<size_t>(index)];
+                const int rowTop = table.top + rowH * (index + 1);
+                const bool grokRow = _wcsicmp(row.provider.c_str(), L"grok") == 0;
+                std::wstring resetText = L"--";
+                std::wstring usedText = row.loading ? LocalizeText(L"...", L"…") : L"--";
+                int usedPercent = 0;
+                bool showBar = false;
+                if (!row.loading && row.hasQuota) {
+                    usedPercent = ClampInt(100 - row.remainingPercent, 0, 100);
+                    usedText = FormatPercent(usedPercent);
+                    showBar = true;
+                    const long long resetAt = row.resetAtUnixSeconds > 0
+                        ? row.resetAtUnixSeconds
+                        : Iso8601ToUnix(row.resetIso);
+                    resetText = FormatDateTime(resetAt);
+                } else if (!row.loading && !row.success && !row.error.empty()) {
+                    resetText = row.error;
+                }
+                const float iconX = static_cast<float>(table.left + ScaleForDpi(hwnd_, 8) + iconSize / 2);
+                const float iconY = static_cast<float>(rowTop + rowH / 2);
+                drawPlatformIcon(grokRow, iconX, iconY, static_cast<float>(iconSize));
+                RECT nameRect = MakeRect(table.left + ScaleForDpi(hwnd_, 10) + iconSize, rowTop, nameRight - ScaleForDpi(hwnd_, 4), rowTop + rowH);
+                RECT percentRect = MakeRect(timeLeft - percentW, rowTop, timeLeft - ScaleForDpi(hwnd_, 8), rowTop + rowH);
+                RECT track = MakeRect(nameRight + ScaleForDpi(hwnd_, 8), rowTop + ScaleForDpi(hwnd_, 7), percentRect.left - ScaleForDpi(hwnd_, 6), rowTop + rowH - ScaleForDpi(hwnd_, 7));
+                RECT timeRect = MakeRect(timeLeft + ScaleForDpi(hwnd_, 6), rowTop, table.right - ScaleForDpi(hwnd_, 6), rowTop + rowH);
+                const std::wstring accountName = !row.alias.empty()
+                    ? row.alias
+                    : (row.email.empty() ? row.label : row.email);
+                const std::wstring shownName = (grokRow ? L"Grok  " : L"Codex  ") + accountName;
+                drawTextBlock(textFormatFoot_.Get(), shownName, nameRect, textPrimary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                fillRect(track, lightTheme_ ? RGB(255, 255, 255) : RGB(20, 24, 22));
+                if (showBar && RectWidth(track) > 0) {
+                    RECT fill = track;
+                    fill.right = fill.left + RectWidth(track) * usedPercent / 100;
+                    if (fill.right > fill.left) {
+                        fillRect(fill, ColorForRemainingPercent(100 - usedPercent, false));
+                    }
+                }
+                drawTextBlock(textFormatFoot_.Get(), usedText, percentRect, showBar ? ColorForRemainingPercent(100 - usedPercent, false) : textSecondary,
+                    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                drawTextBlock(textFormatFoot_.Get(), resetText, timeRect, textSecondary,
+                    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            }
+            y = table.bottom + ScaleForDpi(hwnd_, 4);
+            if (summaryInFlight_) {
+                RECT status = MakeRect(left, y, right, y + ScaleForDpi(hwnd_, 18));
+                drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Refreshing weekly limits...", L"正在刷新周限额..."), status, textSecondary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                y += ScaleForDpi(hwnd_, 22);
+            }
+            y += drawModelScoresPanel(y, left, right);
             return;
         }
     }

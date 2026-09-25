@@ -7,6 +7,7 @@ struct AccountEntry {
     std::wstring id;
     std::wstring path;
     std::wstring alias;
+    std::wstring email;
     std::wstring provider;
     int order = 0;
     std::wstring label;

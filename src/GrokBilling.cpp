@@ -4,6 +4,12 @@
 #include "Net.h"
 #include "TextUtil.h"
 
+#include <Windows.h>
+#include <wincrypt.h>
+
+#include <algorithm>
+#include <cmath>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 
@@ -105,6 +111,83 @@ GrokSnapshot ParseGrokBillingJson(const std::string& jsonText) {
     return snapshot;
 }
 
+int GrokWeeklyRemainingPercent(const GrokSnapshot& snapshot) {
+    if (!snapshot.hasUsagePercent) {
+        return -1;
+    }
+    const int used = static_cast<int>(std::lround(snapshot.usagePercent));
+    return std::max(0, std::min(100, 100 - used));
+}
+
+namespace {
+
+std::optional<long long> JwtExpUnix(const std::string& jwt) {
+    const size_t first = jwt.find('.');
+    const size_t second = first == std::string::npos ? std::string::npos : jwt.find('.', first + 1);
+    if (first == std::string::npos || second == std::string::npos) {
+        return std::nullopt;
+    }
+    std::string payload = jwt.substr(first + 1, second - first - 1);
+    for (char& ch : payload) {
+        if (ch == '-') {
+            ch = '+';
+        } else if (ch == '_') {
+            ch = '/';
+        }
+    }
+    while (payload.size() % 4 != 0) {
+        payload.push_back('=');
+    }
+    DWORD size = 0;
+    if (!CryptStringToBinaryA(payload.c_str(), static_cast<DWORD>(payload.size()), CRYPT_STRING_BASE64, nullptr, &size, nullptr, nullptr) || size == 0) {
+        return std::nullopt;
+    }
+    std::string decoded(size, '\0');
+    if (!CryptStringToBinaryA(payload.c_str(), static_cast<DWORD>(payload.size()), CRYPT_STRING_BASE64, reinterpret_cast<BYTE*>(decoded.data()), &size, nullptr, nullptr)) {
+        return std::nullopt;
+    }
+    decoded.resize(size);
+    jsonlite::Parser parser(decoded);
+    const auto root = parser.Parse();
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    const jsonlite::Value* exp = root->Find("exp");
+    if (exp == nullptr) {
+        return std::nullopt;
+    }
+    if (auto asInt = exp->AsInt(); asInt.has_value()) {
+        return static_cast<long long>(*asInt);
+    }
+    if (auto asNum = exp->AsNumber(); asNum.has_value()) {
+        return static_cast<long long>(*asNum);
+    }
+    return std::nullopt;
+}
+
+std::string UnixToUtcIso8601(long long unixSeconds) {
+    const std::time_t when = static_cast<std::time_t>(unixSeconds);
+    std::tm utc = {};
+    if (gmtime_s(&utc, &when) != 0) {
+        return {};
+    }
+    char buffer[40] = {};
+    if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) {
+        return {};
+    }
+    return buffer;
+}
+
+}  // namespace
+
+bool GrokTokenNeedsRefresh(const std::string& jwt, long long nowUnix, long long leadSeconds) {
+    const auto exp = JwtExpUnix(jwt);
+    if (!exp.has_value()) {
+        return jwt.empty();
+    }
+    return *exp <= nowUnix + std::max(0LL, leadSeconds);
+}
+
 namespace {
 
 std::string ReadFile(const std::wstring& path) {
@@ -168,37 +251,52 @@ std::string UrlEncode(const std::string& value) {
     return out;
 }
 
-bool RefreshGrokFile(const std::wstring& authPath, std::string* accessToken) {
+bool RefreshGrokFile(const std::wstring& authPath, std::string* accessToken, std::wstring* errorOut) {
     const std::string original = ReadFile(authPath);
     jsonlite::Parser parser(original);
     const auto root = parser.Parse();
     if (!root.has_value()) {
+        if (errorOut != nullptr) {
+            *errorOut = L"grok auth JSON parse failed";
+        }
         return false;
     }
     const std::string refresh = JsonString(*root, "refresh_token");
     if (refresh.empty()) {
+        if (errorOut != nullptr) {
+            *errorOut = L"grok auth missing refresh_token";
+        }
         return false;
     }
     const std::string body = "grant_type=refresh_token&client_id=b1a00492-073a-47ea-816f-4c329264a828&refresh_token="
         + UrlEncode(refresh);
-    std::wstring error;
+    std::wstring requestError;
     const auto response = NetHttps(
         L"auth.x.ai",
         L"/oauth2/token",
         L"POST",
         {L"Content-Type: application/x-www-form-urlencoded", L"Accept: application/json"},
         &body,
-        &error);
+        &requestError);
     if (!response.has_value()) {
+        if (errorOut != nullptr) {
+            *errorOut = requestError.empty() ? L"grok token refresh failed" : requestError;
+        }
         return false;
     }
     jsonlite::Parser tokenParser(*response);
     const auto tokenRoot = tokenParser.Parse();
     if (!tokenRoot.has_value()) {
+        if (errorOut != nullptr) {
+            *errorOut = L"grok token refresh JSON parse failed";
+        }
         return false;
     }
     const std::string access = JsonString(*tokenRoot, "access_token");
     if (access.empty()) {
+        if (errorOut != nullptr) {
+            *errorOut = L"grok token refresh missing access_token";
+        }
         return false;
     }
     std::string updated = original;
@@ -209,7 +307,22 @@ bool RefreshGrokFile(const std::wstring& authPath, std::string* accessToken) {
     if (const std::string idToken = JsonString(*tokenRoot, "id_token"); !idToken.empty()) {
         ReplaceJsonString(&updated, "id_token", idToken);
     }
-    WriteFileBytes(authPath, updated);
+    if (const auto exp = JwtExpUnix(access); exp.has_value()) {
+        const std::string expired = UnixToUtcIso8601(*exp);
+        if (!expired.empty()) {
+            ReplaceJsonString(&updated, "expired", expired);
+        }
+    }
+    const std::string refreshedAt = UnixToUtcIso8601(static_cast<long long>(std::time(nullptr)));
+    if (!refreshedAt.empty()) {
+        ReplaceJsonString(&updated, "last_refresh", refreshedAt);
+    }
+    if (!WriteFileBytes(authPath, updated)) {
+        if (errorOut != nullptr) {
+            *errorOut = L"cannot write refreshed grok auth";
+        }
+        return false;
+    }
     if (accessToken != nullptr) {
         *accessToken = access;
     }
@@ -251,17 +364,54 @@ GrokSnapshot FetchGrokBillingFile(const std::wstring& authPath) {
     jsonlite::Parser parser(original);
     const auto root = parser.Parse();
     std::string access;
+    std::string refresh;
+    if (root.has_value()) {
+        access = JsonString(*root, "access_token");
+        refresh = JsonString(*root, "refresh_token");
+    }
+    std::wstring refreshError;
+    bool refreshed = false;
+    const long long now = static_cast<long long>(std::time(nullptr));
+    // Grok access tokens last about 6 hours. A 1-day lead would refresh every poll.
+    if (!refresh.empty() && GrokTokenNeedsRefresh(access, now, kGrokRefreshLeadSeconds)) {
+        refreshed = RefreshGrokFile(authPath, &access, &refreshError);
+    }
+    GrokSnapshot snapshot = FetchGrokBilling(access);
+    const auto unauthorized = [&](const GrokSnapshot& item) {
+        return item.error.find(L"HTTP 401") != std::wstring::npos
+            || item.error.find(L"HTTP 403") != std::wstring::npos;
+    };
+    if (unauthorized(snapshot) && !refresh.empty() && !refreshed) {
+        if (RefreshGrokFile(authPath, &access, &refreshError)) {
+            snapshot = FetchGrokBilling(access);
+        }
+    }
+    if (!snapshot.success && !refreshError.empty()) {
+        snapshot.error = refreshError;
+    }
+    return snapshot;
+}
+
+GrokTokenRefreshResult RefreshGrokAuthIfNeeded(
+    const std::wstring& authPath,
+    long long leadSeconds,
+    bool force) {
+    GrokTokenRefreshResult result;
+    const std::string original = ReadFile(authPath);
+    jsonlite::Parser parser(original);
+    const auto root = parser.Parse();
+    std::string access;
     if (root.has_value()) {
         access = JsonString(*root, "access_token");
     }
-    GrokSnapshot snapshot = FetchGrokBilling(access);
-    const bool unauthorized = snapshot.error.find(L"HTTP 401") != std::wstring::npos
-        || snapshot.error.find(L"HTTP 403") != std::wstring::npos;
-    if (!unauthorized) {
-        return snapshot;
+    const long long now = static_cast<long long>(std::time(nullptr));
+    if (!force && !GrokTokenNeedsRefresh(access, now, leadSeconds)) {
+        result.success = true;
+        return result;
     }
-    if (!RefreshGrokFile(authPath, &access)) {
-        return snapshot;
-    }
-    return FetchGrokBilling(access);
+    result.attempted = true;
+    std::wstring error;
+    result.success = RefreshGrokFile(authPath, nullptr, &error);
+    result.error = error;
+    return result;
 }

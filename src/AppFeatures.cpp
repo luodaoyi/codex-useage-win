@@ -8,6 +8,7 @@
 
 #include <ShlObj.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -116,15 +117,28 @@ std::optional<std::wstring> AppBarWindow::PromptText(const wchar_t* title, bool 
         registered = true;
     }
     PromptState state;
+    const int dialogWidth = 520;
+    const int dialogHeight = multiline ? 360 : 140;
+    RECT work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    if (hwnd_ != nullptr) {
+        HMONITOR monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitorInfo = {};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        if (GetMonitorInfoW(monitor, &monitorInfo)) {
+            work = monitorInfo.rcWork;
+        }
+    }
+    const int dialogX = work.left + ((work.right - work.left) - dialogWidth) / 2;
+    const int dialogY = work.top + ((work.bottom - work.top) - dialogHeight) / 2;
     HWND dialog = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         L"CodexUsageBarPrompt",
         title,
         WS_POPUP | WS_CAPTION | WS_SYSMENU,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        520,
-        multiline ? 360 : 140,
+        dialogX,
+        dialogY,
+        dialogWidth,
+        dialogHeight,
         hwnd_,
         nullptr,
         instance_,
@@ -148,7 +162,8 @@ std::optional<std::wstring> AppBarWindow::PromptText(const wchar_t* title, bool 
     CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 300, multiline ? 274 : 52, 90, 28, dialog, reinterpret_cast<HMENU>(IDOK), instance_, nullptr);
     CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 400, multiline ? 274 : 52, 90, 28, dialog, reinterpret_cast<HMENU>(IDCANCEL), instance_, nullptr);
     EnableWindow(hwnd_, FALSE);
-    ShowWindow(dialog, SW_SHOW);
+    SetWindowPos(dialog, HWND_TOP, dialogX, dialogY, dialogWidth, dialogHeight, SWP_SHOWWINDOW);
+    SetForegroundWindow(dialog);
     MSG message;
     while (IsWindow(dialog) && GetMessageW(&message, nullptr, 0, 0) > 0) {
         if (!IsDialogMessageW(dialog, &message)) {
@@ -260,14 +275,24 @@ void AppBarWindow::RenameActiveAccount() {
     if (activeAuthId_.empty() && !authMenuAccounts_.empty()) {
         activeAuthId_ = authMenuAccounts_.front().id;
     }
-    const auto alias = PromptText(Tr(L"Account alias", L"账号别名", L"帳號別名", L"계정 별칭", L"アカウント名", L"Псевдоним", L"Alias du compte"), false);
+    RenameAccountById(activeAuthId_);
+}
+
+void AppBarWindow::RenameAccountById(const std::wstring& id) {
+    if (id.empty()) {
+        return;
+    }
+    const auto alias = PromptText(Tr(L"Account alias", L"账号别称", L"帳號別稱", L"계정 별칭", L"アカウント名", L"Псевдоним", L"Alias du compte"), false);
     if (!alias.has_value()) {
         return;
     }
-    const AccountOpResult renamed = accounts_.SetAlias(activeAuthId_, *alias);
+    const AccountOpResult renamed = accounts_.SetAlias(id, *alias);
     resetCreditActionMessage_ = renamed.success
-        ? Tr(L"Alias saved", L"别名已保存", L"別名已儲存", L"별칭 저장됨", L"別名を保存しました", L"Псевдоним сохранён", L"Alias enregistré")
+        ? Tr(L"Alias saved", L"别称已保存", L"別稱已儲存", L"별칭 저장됨", L"別名を保存しました", L"Псевдоним сохранён", L"Alias enregistré")
         : renamed.error;
+    if (renamed.success) {
+        SeedSummaryRows();
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -282,32 +307,59 @@ void AppBarWindow::DeleteActiveAccount() {
     if (activeAuthId_.empty() && !authMenuAccounts_.empty()) {
         activeAuthId_ = authMenuAccounts_.front().id;
     }
-    if (activeAuthId_.empty()) {
+    DeleteAccountById(activeAuthId_);
+}
+
+void AppBarWindow::DeleteAccountById(const std::wstring& id) {
+    if (id.empty()) {
         return;
     }
-    if (MessageBoxW(hwnd_,
-            Tr(L"Delete this imported copy? The original auth file is not touched.",
-                L"删除这份导入副本？不会改动原来的凭证文件。",
-                L"刪除這份匯入副本？不會改動原來的憑證檔。",
-                L"가져온 복사본을 삭제할까요? 원본 파일은 그대로입니다.",
-                L"このコピーを削除しますか？元のファイルは変更しません。",
-                L"Удалить эту копию? Исходный файл не изменится.",
-                L"Supprimer cette copie ? Le fichier d'origine n'est pas modifié."),
+    std::wstring label = id;
+    for (const AccountEntry& account : accounts_.List(L"")) {
+        if (_wcsicmp(account.id.c_str(), id.c_str()) == 0) {
+            label = account.label;
+            break;
+        }
+    }
+    const std::wstring message = std::wstring(Tr(
+        L"Delete this imported copy? The original auth file is not touched.",
+        L"删除这份导入副本？不会改动原来的凭证文件。",
+        L"刪除這份匯入副本？不會改動原來的憑證檔。",
+        L"가져온 복사본을 삭제할까요? 원본 파일은 그대로입니다.",
+        L"このコピーを削除しますか？元のファイルは変更しません。",
+        L"Удалить эту копию? Исходный файл не изменится.",
+        L"Supprimer cette copie ? Le fichier d'origine n'est pas modifié."))
+        + L"\n" + label;
+    if (MessageBoxW(hwnd_, message.c_str(),
             Tr(L"Delete account", L"删除账号", L"刪除帳號", L"계정 삭제", L"アカウントを削除", L"Удалить аккаунт", L"Supprimer le compte"),
             MB_ICONWARNING | MB_YESNO) != IDYES) {
         return;
     }
-    const AccountOpResult deleted = accounts_.Delete(activeAuthId_);
+    const AccountOpResult deleted = accounts_.Delete(id);
     if (!deleted.success) {
         resetCreditActionMessage_ = deleted.error;
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
-    activeAuthId_.clear();
-    SaveActiveAuth();
-    snapshot_ = {};
-    grok_ = {};
-    RequestRefresh(true);
+    summaryRows_.erase(
+        std::remove_if(summaryRows_.begin(), summaryRows_.end(), [&](const AccountQuotaRow& row) {
+            return _wcsicmp(row.id.c_str(), id.c_str()) == 0;
+        }),
+        summaryRows_.end());
+    tokenRefreshNotBefore_.erase(
+        std::remove_if(tokenRefreshNotBefore_.begin(), tokenRefreshNotBefore_.end(), [&](const auto& item) {
+            return _wcsicmp(item.first.c_str(), id.c_str()) == 0;
+        }),
+        tokenRefreshNotBefore_.end());
+    if (_wcsicmp(activeAuthId_.c_str(), id.c_str()) == 0) {
+        activeAuthId_.clear();
+        SaveActiveAuth();
+        snapshot_ = {};
+        grok_ = {};
+        RequestRefresh(true);
+    }
+    FitWindowToContent();
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void AppBarWindow::StartBrowserSignIn() {

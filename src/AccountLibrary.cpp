@@ -404,10 +404,13 @@ std::vector<AccountEntry> AccountLibrary::List(const std::wstring& provider) con
             item.provider = detected;
         }
         const ParsedAuth parsed = ParseAuth(fileText, item.provider);
+        if (!parsed.email.empty()) {
+            item.email = Utf8ToWide(parsed.email);
+        }
         if (!item.alias.empty()) {
             item.label = item.alias;
-        } else if (!parsed.email.empty()) {
-            item.label = Utf8ToWide(parsed.email);
+        } else if (!item.email.empty()) {
+            item.label = item.email;
         }
         if (!provider.empty() && !EqualsIgnoreCase(item.provider, provider)) {
             continue;

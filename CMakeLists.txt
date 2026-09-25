@@ -44,6 +44,7 @@ add_executable(CodexUsageBar WIN32
     src/main.cpp
     src/AppBarWindow.cpp
     src/AppFeatures.cpp
+    src/BrandIcons.cpp
     src/CodexUsageFetcher.cpp
     ${USAGE_BAR_SOURCES}
 )
@@ -72,6 +73,7 @@ target_link_libraries(CodexUsageBar PRIVATE
     crypt32
     d2d1
     dwrite
+    windowscodecs
     gdi32
     ole32
     secur32

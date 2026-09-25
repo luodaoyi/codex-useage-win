@@ -69,6 +69,7 @@ struct ConsumeResetCreditResult {
 struct TokenRefreshResult {
     bool success = false;
     bool wroteAuthFile = false;
+    bool attempted = false;
     std::wstring errorMessage;
 };
 
@@ -139,6 +140,8 @@ public:
 
     // Force OAuth refresh and write tokens back to this account's file.
     TokenRefreshResult ForceRefreshAuthTokens(const std::wstring& authPath) const;
+    // Refresh only when the access/id token is inside the 1-day lead. Otherwise skipped.
+    TokenRefreshResult RefreshAuthIfNeeded(const std::wstring& authPath) const;
 
     // Spends one real rate-limit reset credit. Do not call casually.
     ConsumeResetCreditResult ConsumeRateLimitResetCredit(

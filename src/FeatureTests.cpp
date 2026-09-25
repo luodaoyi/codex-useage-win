@@ -194,6 +194,14 @@ void TestGrok() {
     const GrokSnapshot zero = ParseGrokBillingJson(
         "{\"config\":{\"currentPeriod\":{\"type\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"end\":\"2026-10-01T00:00:00Z\"},\"isUnifiedBillingUser\":true,\"prepaidBalance\":{\"val\":0}}}");
     Expect(zero.success && zero.hasUsagePercent && zero.usagePercent == 0, "omitted grok usage is zero");
+    Expect(GrokWeeklyRemainingPercent(snapshot) == 92, "grok weekly remaining is 100 minus used");
+    Expect(GrokWeeklyRemainingPercent(zero) == 100, "zero grok usage remains full");
+    Expect(GrokWeeklyRemainingPercent(GrokSnapshot{}) == -1, "missing grok usage has no remaining");
+    Expect(GrokTokenNeedsRefresh("eyJhbGciOiJub25lIn0.eyJleHAiOjEwfQ.x", 100, 300), "expired grok access token needs refresh");
+    Expect(!GrokTokenNeedsRefresh("eyJhbGciOiJub25lIn0.eyJleHAiOjIwMDAwMDAwMDB9.x", 100, 300), "fresh grok access token does not refresh yet");
+    Expect(GrokTokenNeedsRefresh("", 100, 300), "missing grok access token needs refresh");
+    Expect(GrokTokenNeedsRefresh("eyJhbGciOiJub25lIn0.eyJleHAiOjIwMDAwMDAwMDB9.x", 2000000000 - 3599, kGrokRefreshLeadSeconds), "grok token inside the one-hour lead is due");
+    Expect(!GrokTokenNeedsRefresh("eyJhbGciOiJub25lIn0.eyJleHAiOjIwMDAwMDAwMDB9.x", 2000000000 - 7200, kGrokRefreshLeadSeconds), "grok token outside the one-hour lead waits");
 }
 
 void TestProxyAndUpdate() {

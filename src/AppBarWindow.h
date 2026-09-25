@@ -27,6 +27,14 @@ struct MenuEntry {
     bool enabled = true;
 };
 
+struct TokenMaintenanceReport {
+    int refreshed = 0;
+    int failed = 0;
+    std::wstring error;
+    std::vector<std::wstring> revokedIds;
+    std::vector<std::wstring> failedIds;
+};
+
 class AppBarWindow {
 public:
     explicit AppBarWindow(HINSTANCE instance);
@@ -49,10 +57,16 @@ private:
     static constexpr UINT_PTR kResetConfirmTimerId = 3;
     static constexpr UINT_PTR kModelScoresTimerId = 4;
     static constexpr UINT_PTR kResetStatusTimerId = 5;
+    static constexpr UINT_PTR kTokenMaintenanceTimerId = 6;
+    // Check every configured account, shown or not. Independent of the usage interval.
+    static constexpr int kTokenMaintenanceIntervalSeconds = 300;
     static constexpr UINT kBrowserDoneMessage = WM_APP + 6;
     static constexpr UINT kSessionScanMessage = WM_APP + 7;
     static constexpr UINT kResetStatusMessage = WM_APP + 8;
     static constexpr UINT kGrokUpdatedMessage = WM_APP + 9;
+    static constexpr UINT kSummaryRowMessage = WM_APP + 10;
+    static constexpr UINT kSummaryDoneMessage = WM_APP + 11;
+    static constexpr UINT kTokenMaintenanceMessage = WM_APP + 12;
     static constexpr int kModelScoresRefreshIntervalSeconds = 300;
 
     enum class Language {
@@ -75,12 +89,28 @@ private:
         Usage = 0,
         Accounts = 1,
         Settings = 2,
+        Summary = 3,
     };
 
     struct UiHit {
         RECT rect = {};
         UINT command = 0;
         std::wstring accountId;
+    };
+
+    struct AccountQuotaRow {
+        std::wstring id;
+        std::wstring label;
+        std::wstring alias;
+        std::wstring email;
+        std::wstring provider;
+        bool loading = true;
+        bool success = false;
+        std::wstring error;
+        bool hasQuota = false;
+        int remainingPercent = 100;
+        long long resetAtUnixSeconds = 0;
+        std::wstring resetIso;
     };
 
     enum class ChartKind {
@@ -123,8 +153,10 @@ private:
     void ReloadAccounts();
     void PasteImport(const std::wstring& provider);
     void RenameActiveAccount();
+    void RenameAccountById(const std::wstring& id);
     void MoveActiveAccount(int delta);
     void DeleteActiveAccount();
+    void DeleteAccountById(const std::wstring& id);
     void StartBrowserSignIn();
     void RequestResetStatus();
     void RequestSessionScan();
@@ -134,6 +166,13 @@ private:
     void TestProxy();
     void DownloadAndStageUpdate();
     void RequestGrokRefresh();
+    void RequestTokenMaintenance();
+    void OnTokenMaintenance(TokenMaintenanceReport* report);
+    void SeedSummaryRows();
+    void RequestSummaryRefresh();
+    void OnSummaryRowUpdated(int generation, AccountQuotaRow* row);
+    void OnSummaryRefreshDone(int generation);
+    int SummaryContentHeight() const;
     const wchar_t* Tr(
         const wchar_t* english,
         const wchar_t* simplified,
@@ -195,6 +234,7 @@ private:
 
     HRESULT CreateDeviceIndependentResources();
     HRESULT CreateDeviceResources();
+    HRESULT EnsureBrandIcons();
     void DiscardDeviceResources();
     void DiscardTextFormats();
     HRESULT EnsureTextFormats();
@@ -288,6 +328,12 @@ private:
     std::atomic_bool resetStatusInFlight_ = false;
     std::atomic_bool grokInFlight_ = false;
     std::atomic_bool browserSignInInFlight_ = false;
+    std::atomic_bool summaryInFlight_ = false;
+    std::atomic_bool tokenMaintenanceInFlight_ = false;
+    // Account id -> unix time before which a failed refresh is not retried.
+    std::vector<std::pair<std::wstring, long long>> tokenRefreshNotBefore_;
+    int summaryGeneration_ = 0;
+    std::vector<AccountQuotaRow> summaryRows_;
     RECT resetLinkRect_ = {};
     HWND stickyMenu_ = nullptr;
     // Settings key of the selected credential file. Empty means the default slot.
@@ -300,6 +346,8 @@ private:
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> renderTarget_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> solidBrush_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> codexIcon_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> grokIcon_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatKicker_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatTitle_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatDelta_;

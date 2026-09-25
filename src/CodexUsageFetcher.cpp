@@ -535,10 +535,37 @@ std::optional<std::string> HttpExchange(
         WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
             WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX);
         if (statusCode < 200 || statusCode > 299) {
+            std::string errBody;
+            for (;;) {
+                DWORD available = 0;
+                if (!WinHttpQueryDataAvailable(request, &available) || available == 0) {
+                    break;
+                }
+                std::string chunk(static_cast<size_t>(available), '\0');
+                DWORD downloaded = 0;
+                if (!WinHttpReadData(request, chunk.data(), available, &downloaded)) {
+                    break;
+                }
+                chunk.resize(downloaded);
+                errBody.append(chunk);
+                if (errBody.size() >= 512) {
+                    break;
+                }
+            }
             if (errorMessage != nullptr) {
                 *errorMessage = host + path + L" returned HTTP " + std::to_wstring(statusCode);
                 if (statusCode == 401) {
-                    *errorMessage += L"; auth.json access_token may be expired (auto-refresh runs within 1 day of JWT exp or on 401/403)";
+                    *errorMessage += L"; access token may be expired";
+                }
+                const bool secret = errBody.find("access_token") != std::string::npos
+                    || errBody.find("refresh_token") != std::string::npos
+                    || errBody.find("Bearer ") != std::string::npos;
+                if (!errBody.empty() && !secret) {
+                    if (errBody.size() > 180) {
+                        errBody.resize(180);
+                    }
+                    *errorMessage += L" ";
+                    *errorMessage += Utf8ToWide(errBody);
                 }
             }
             break;
@@ -1018,6 +1045,7 @@ TokenRefreshResult CodexUsageFetcher::ForceRefreshAuthTokens(const std::wstring&
         return result;
     }
 
+    result.attempted = true;
     if (!RefreshAuthCredentials(&*credentials, &errorMessage)) {
         result.errorMessage = errorMessage.empty() ? L"token refresh failed" : errorMessage;
         return result;
@@ -1026,6 +1054,22 @@ TokenRefreshResult CodexUsageFetcher::ForceRefreshAuthTokens(const std::wstring&
     result.success = true;
     result.wroteAuthFile = !credentials->authPath.empty();
     return result;
+}
+
+TokenRefreshResult CodexUsageFetcher::RefreshAuthIfNeeded(const std::wstring& authPath) const {
+    TokenRefreshResult result;
+    std::wstring errorMessage;
+    std::optional<AuthCredentials> credentials = ReadAuthCredentials(authPath, &errorMessage);
+    if (!credentials.has_value()) {
+        result.attempted = true;
+        result.errorMessage = errorMessage;
+        return result;
+    }
+    if (credentials->refreshToken.empty() || !CredentialsNeedProactiveRefresh(*credentials)) {
+        result.success = true;
+        return result;
+    }
+    return ForceRefreshAuthTokens(authPath);
 }
 
 ConsumeResetCreditResult CodexUsageFetcher::ConsumeRateLimitResetCredit(
