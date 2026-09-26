@@ -239,6 +239,8 @@ private:
     void DiscardTextFormats();
     HRESULT EnsureTextFormats();
     HRESULT CreateTextFormat(float sizePixels, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** format);
+    HRESULT CreateTextFormat(const wchar_t* fontFamily, float sizePixels, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** format);
+    HRESULT CreateMonoTextFormat(float sizePixels, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** format);
 
     void Paint(HDC hdc);
     void PaintContent(const RECT& clientRect);
@@ -354,4 +356,6 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatMetricLabel_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatMetricValue_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatFoot_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatMono_;
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormatMonoBold_;
 };

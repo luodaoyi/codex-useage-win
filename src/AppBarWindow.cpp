@@ -857,8 +857,13 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
     }
     const int filterH = GetModelScoreFilterBandHeight(std::max(1, innerWidth));
     const int rows = GetModelScoresVisibleRowCount();
-    // gap + box(padding + filter + header + rows + pager + attribution + padding)
-    return ScaleForDpi(hwnd_, 6 + 4 + 16) + filterH + ScaleForDpi(hwnd_, 4 + rows * 16 + 18 + 14 + 4);
+    const int gap = ScaleForDpi(hwnd_, 6);
+    const int pad = ScaleForDpi(hwnd_, 4);
+    const int rowH = ScaleForDpi(hwnd_, 22);
+    const int midGap = ScaleForDpi(hwnd_, 4);
+    const int pagerH = ScaleForDpi(hwnd_, 18);
+    const int footH = ScaleForDpi(hwnd_, 14);
+    return gap + pad + filterH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
 }
 
 bool AppBarWindow::IsModelScoreFamilySelected(const std::wstring& familyKey) const {
@@ -1407,8 +1412,16 @@ HRESULT AppBarWindow::CreateDeviceIndependentResources() {
 }
 
 HRESULT AppBarWindow::CreateTextFormat(float sizePixels, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** format) {
+    return CreateTextFormat(L"Segoe UI", sizePixels, weight, format);
+}
+
+HRESULT AppBarWindow::CreateTextFormat(
+    const wchar_t* fontFamily,
+    float sizePixels,
+    DWRITE_FONT_WEIGHT weight,
+    IDWriteTextFormat** format) {
     return dwriteFactory_->CreateTextFormat(
-        L"Segoe UI",
+        fontFamily,
         nullptr,
         weight,
         DWRITE_FONT_STYLE_NORMAL,
@@ -1418,6 +1431,21 @@ HRESULT AppBarWindow::CreateTextFormat(float sizePixels, DWRITE_FONT_WEIGHT weig
         format);
 }
 
+HRESULT AppBarWindow::CreateMonoTextFormat(float sizePixels, DWRITE_FONT_WEIGHT weight, IDWriteTextFormat** format) {
+    const wchar_t* families[] = { L"Cascadia Mono", L"Cascadia Code", L"Consolas", L"Lucida Console" };
+    Microsoft::WRL::ComPtr<IDWriteFontCollection> collection;
+    if (SUCCEEDED(dwriteFactory_->GetSystemFontCollection(collection.GetAddressOf())) && collection) {
+        for (const wchar_t* family : families) {
+            UINT32 index = 0;
+            BOOL exists = FALSE;
+            if (SUCCEEDED(collection->FindFamilyName(family, &index, &exists)) && exists) {
+                return CreateTextFormat(family, sizePixels, weight, format);
+            }
+        }
+    }
+    return CreateTextFormat(L"Consolas", sizePixels, weight, format);
+}
+
 void AppBarWindow::DiscardTextFormats() {
     textFormatKicker_.Reset();
     textFormatTitle_.Reset();
@@ -1425,6 +1453,8 @@ void AppBarWindow::DiscardTextFormats() {
     textFormatMetricLabel_.Reset();
     textFormatMetricValue_.Reset();
     textFormatFoot_.Reset();
+    textFormatMono_.Reset();
+    textFormatMonoBold_.Reset();
     textFormatDpi_ = 0;
 }
 
@@ -1436,7 +1466,9 @@ HRESULT AppBarWindow::EnsureTextFormats() {
         textFormatDelta_ &&
         textFormatMetricLabel_ &&
         textFormatMetricValue_ &&
-        textFormatFoot_) {
+        textFormatFoot_ &&
+        textFormatMono_ &&
+        textFormatMonoBold_) {
         return S_OK;
     }
 
@@ -1453,6 +1485,10 @@ HRESULT AppBarWindow::EnsureTextFormats() {
     hr = CreateTextFormat(static_cast<float>(ScaleForDpi(hwnd_, 17)), DWRITE_FONT_WEIGHT_BOLD, textFormatMetricValue_.GetAddressOf());
     if (FAILED(hr)) return hr;
     hr = CreateTextFormat(static_cast<float>(ScaleForDpi(hwnd_, 12)), DWRITE_FONT_WEIGHT_NORMAL, textFormatFoot_.GetAddressOf());
+    if (FAILED(hr)) return hr;
+    hr = CreateMonoTextFormat(static_cast<float>(ScaleForDpi(hwnd_, 12)), DWRITE_FONT_WEIGHT_NORMAL, textFormatMono_.GetAddressOf());
+    if (FAILED(hr)) return hr;
+    hr = CreateMonoTextFormat(static_cast<float>(ScaleForDpi(hwnd_, 11)), DWRITE_FONT_WEIGHT_BOLD, textFormatMonoBold_.GetAddressOf());
     if (FAILED(hr)) return hr;
 
     textFormatDpi_ = dpi;
@@ -2555,7 +2591,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
 
     auto formatRadarScore = [](double score) {
         wchar_t buffer[32] = {};
-        swprintf_s(buffer, L"%.1f", score);
+        swprintf_s(buffer, L"%5.1f", score);
         return std::wstring(buffer);
     };
 
@@ -2564,7 +2600,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
             return std::wstring(L"--");
         }
         wchar_t buffer[32] = {};
-        swprintf_s(buffer, L"$%.2f", score.averagePriceUsd);
+        swprintf_s(buffer, L"$%6.2f", score.averagePriceUsd);
         return std::wstring(buffer);
     };
 
@@ -2573,7 +2609,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
             return std::wstring(L"--");
         }
         wchar_t buffer[32] = {};
-        swprintf_s(buffer, language_ == Language::Chinese ? L"%.1f分" : L"%.1fm", score.averageMinutes);
+        swprintf_s(buffer, language_ == Language::Chinese ? L"%5.1f分" : L"%5.1fm", score.averageMinutes);
         return std::wstring(buffer);
     };
 
@@ -2594,24 +2630,59 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
 
         const int gap = ScaleForDpi(hwnd_, 6);
         const int pad = ScaleForDpi(hwnd_, 4);
-        const int headerH = ScaleForDpi(hwnd_, 16);
-        const int rowH = ScaleForDpi(hwnd_, 16);
+        const int rowH = ScaleForDpi(hwnd_, 22);
         const int footH = ScaleForDpi(hwnd_, 14);
         const int innerPad = ScaleForDpi(hwnd_, 8);
-        const int scoreColW = ScaleForDpi(hwnd_, 44);
-        const int timeColW = ScaleForDpi(hwnd_, 52);
-        const int costColW = ScaleForDpi(hwnd_, 56);
-        const int colGap = ScaleForDpi(hwnd_, 6);
-        const int metricColsW = scoreColW + colGap + timeColW + colGap + costColW;
+        const int cellPad = ScaleForDpi(hwnd_, 6);
+        const int midGap = ScaleForDpi(hwnd_, 4);
         const int pagerH = ScaleForDpi(hwnd_, 18);
+        const int accentW = std::max(3, ScaleForDpi(hwnd_, 3));
+        IDWriteTextFormat* mono = textFormatMono_ ? textFormatMono_.Get() : textFormatFoot_.Get();
+        IDWriteTextFormat* monoBold = textFormatMonoBold_ ? textFormatMonoBold_.Get() : mono;
+        const int scoreColW = std::max(
+            ScaleForDpi(hwnd_, 52),
+            static_cast<int>(std::ceil(measureTextWidth(mono, L"000.0"))) + cellPad * 2);
+        const int timeColW = std::max(
+            ScaleForDpi(hwnd_, 64),
+            static_cast<int>(std::ceil(measureTextWidth(mono, language_ == Language::Chinese ? L"000.0分" : L"000.0m"))) + cellPad * 2);
+        const int costColW = std::max(
+            ScaleForDpi(hwnd_, 68),
+            static_cast<int>(std::ceil(measureTextWidth(mono, L"$000.00"))) + cellPad * 2);
+        const float effortSampleW = std::max(
+            measureTextWidth(monoBold, L"MEDIUM"),
+            measureTextWidth(monoBold, L"XHIGH"));
+        const int effortColW = std::max(
+            ScaleForDpi(hwnd_, 72),
+            static_cast<int>(std::ceil(effortSampleW)) + ScaleForDpi(hwnd_, 22));
         const int rows = GetModelScoresVisibleRowCount();
         const int filterInnerLeft = left + innerPad;
         const int filterInnerRight = right - innerPad;
         const int filterH = GetModelScoreFilterBandHeight(std::max(1, filterInnerRight - filterInnerLeft));
-        const int boxH = pad + filterH + headerH + ScaleForDpi(hwnd_, 4) + rows * rowH + pagerH + footH + pad;
+        const int tableH = rowH * (rows + 1);
+        const int boxH = pad + filterH + midGap + tableH + midGap + pagerH + footH + pad;
         RECT box = MakeRect(left, top + gap, right, top + gap + boxH);
-        fillRect(box, lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36));
+        const COLORREF cardBg = lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36);
+        const COLORREF headerBg = lightTheme_ ? RGB(236, 240, 237) : RGB(44, 52, 47);
+        const COLORREF rowAlt = lightTheme_ ? RGB(255, 255, 255) : RGB(28, 34, 31);
+        fillRect(box, cardBg);
         drawRectBorder(box, border);
+
+        auto fillRound = [&](const RECT& rect, COLORREF color, float radius) {
+            if (rect.right <= rect.left || rect.bottom <= rect.top) {
+                return;
+            }
+            solidBrush_->SetColor(ToColorF(color));
+            renderTarget_->FillRoundedRectangle(
+                D2D1::RoundedRect(ToRectF(rect), radius, radius), solidBrush_.Get());
+        };
+        auto strokeRound = [&](const RECT& rect, COLORREF color, float radius) {
+            if (rect.right <= rect.left || rect.bottom <= rect.top) {
+                return;
+            }
+            solidBrush_->SetColor(ToColorF(color));
+            renderTarget_->DrawRoundedRectangle(
+                D2D1::RoundedRect(ToRectF(rect), radius, radius), solidBrush_.Get(), 1.0f);
+        };
 
         const int filterTop = box.top + pad;
         modelScoreFilterChips_ = BuildModelScoreFilterChips(
@@ -2628,28 +2699,157 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         }
 
+        const int tableLeft = box.left + 1;
+        const int tableRight = box.right - 1;
+        const int tableTop = filterTop + filterH + midGap;
+        const int tableBottom = tableTop + tableH;
+        const int costLeft = tableRight - costColW;
+        const int timeLeft = costLeft - timeColW;
+        const int scoreLeft = timeLeft - scoreColW;
+        const int effortLeft = scoreLeft - effortColW;
+
+        struct SeriesInk { COLORREF light; COLORREF dark; };
+        static const SeriesInk seriesPalette[] = {
+            { RGB(14, 116, 144), RGB(110, 214, 230) },
+            { RGB(29, 78, 216), RGB(156, 184, 255) },
+            { RGB(109, 40, 217), RGB(204, 168, 255) },
+            { RGB(190, 24, 93), RGB(255, 160, 196) },
+            { RGB(180, 83, 9), RGB(255, 196, 110) },
+            { RGB(21, 128, 61), RGB(120, 214, 156) },
+            { RGB(15, 118, 110), RGB(110, 220, 200) },
+            { RGB(185, 28, 28), RGB(255, 160, 150) },
+            { RGB(79, 70, 229), RGB(176, 176, 255) },
+            { RGB(146, 64, 14), RGB(255, 176, 120) },
+            { RGB(3, 105, 161), RGB(130, 200, 245) },
+            { RGB(112, 48, 160), RGB(220, 160, 245) },
+        };
+        std::vector<std::wstring> seriesOrder;
+        auto seriesKeyOf = [](const ModelIqScore& score) {
+            return score.model.empty() ? score.label : score.model;
+        };
+        auto seriesIndexOf = [&](const std::wstring& key) {
+            for (int index = 0; index < static_cast<int>(seriesOrder.size()); ++index) {
+                if (seriesOrder[static_cast<size_t>(index)] == key) {
+                    return index;
+                }
+            }
+            seriesOrder.push_back(key);
+            return static_cast<int>(seriesOrder.size()) - 1;
+        };
+        for (const ModelIqScore& score : modelScores_.scores) {
+            seriesIndexOf(seriesKeyOf(score));
+        }
+        auto seriesColorOf = [&](const std::wstring& key) {
+            const int index = seriesIndexOf(key);
+            const SeriesInk& ink = seriesPalette[static_cast<size_t>(index) % (sizeof(seriesPalette) / sizeof(seriesPalette[0]))];
+            return lightTheme_ ? ink.light : ink.dark;
+        };
+        auto modelTitleOf = [](const ModelIqScore& score) {
+            if (!score.effort.empty()) {
+                const std::wstring suffix = L" " + score.effort;
+                if (score.label.size() > suffix.size()
+                    && score.label.compare(score.label.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                    return score.label.substr(0, score.label.size() - suffix.size());
+                }
+            }
+            return score.label;
+        };
+        auto effortBadgeOf = [](const std::wstring& effort) {
+            std::wstring badge = effort;
+            for (wchar_t& ch : badge) {
+                if (ch >= L'a' && ch <= L'z') {
+                    ch = static_cast<wchar_t>(ch - L'a' + L'A');
+                }
+            }
+            return badge;
+        };
+        struct EffortInk {
+            COLORREF fill;
+            COLORREF text;
+            COLORREF edge;
+            bool framed;
+        };
+        auto effortInkOf = [&](const std::wstring& effort) {
+            std::wstring key;
+            key.reserve(effort.size());
+            for (wchar_t ch : effort) {
+                if (ch >= L'A' && ch <= L'Z') {
+                    ch = static_cast<wchar_t>(ch - L'A' + L'a');
+                } else if (ch == L'_' || ch == L' ') {
+                    ch = L'-';
+                }
+                key.push_back(ch);
+            }
+            int tier = 6;
+            if (key == L"none" || key == L"minimal" || key == L"min" || key == L"low") {
+                tier = 0;
+            } else if (key == L"medium" || key == L"med") {
+                tier = 1;
+            } else if (key == L"high") {
+                tier = 2;
+            } else if (key == L"xhigh" || key == L"x-high" || key == L"extra-high" || key == L"extrahigh") {
+                tier = 3;
+            } else if (key == L"max" || key == L"maximum") {
+                tier = 4;
+            } else if (key == L"ultra") {
+                tier = 5;
+            }
+            struct Pair {
+                COLORREF fillL, textL, edgeL, fillD, textD, edgeD;
+                bool framed;
+            };
+            static const Pair table[] = {
+                { RGB(226, 230, 227), RGB(84, 94, 88), RGB(196, 204, 198), RGB(46, 52, 48), RGB(176, 186, 180), RGB(70, 78, 74), false },
+                { RGB(255, 228, 186), RGB(140, 72, 0), RGB(232, 176, 96), RGB(92, 58, 16), RGB(255, 204, 112), RGB(180, 120, 40), false },
+                { RGB(210, 230, 255), RGB(16, 74, 168), RGB(120, 168, 230), RGB(22, 48, 92), RGB(150, 202, 255), RGB(80, 130, 200), false },
+                { RGB(230, 216, 255), RGB(88, 28, 176), RGB(160, 120, 220), RGB(56, 32, 100), RGB(214, 176, 255), RGB(150, 110, 210), true },
+                { RGB(255, 210, 220), RGB(164, 16, 58), RGB(210, 60, 96), RGB(100, 24, 46), RGB(255, 160, 184), RGB(220, 80, 110), true },
+                { RGB(255, 176, 72), RGB(110, 36, 0), RGB(168, 64, 0), RGB(150, 72, 8), RGB(255, 220, 150), RGB(255, 176, 64), true },
+                { RGB(214, 242, 228), RGB(10, 108, 70), RGB(80, 170, 120), RGB(26, 62, 46), RGB(136, 226, 176), RGB(70, 150, 110), false },
+            };
+            const Pair& ink = table[tier];
+            if (lightTheme_) {
+                return EffortInk{ ink.fillL, ink.textL, ink.edgeL, ink.framed };
+            }
+            return EffortInk{ ink.fillD, ink.textD, ink.edgeD, ink.framed };
+        };
+
+        fillRect(MakeRect(tableLeft, tableTop, tableRight, tableTop + rowH), headerBg);
+        auto hline = [&](int lineY) {
+            fillRect(MakeRect(tableLeft, lineY, tableRight, lineY + 1), border);
+        };
+        auto vline = [&](int x) {
+            if (x > tableLeft && x < tableRight) {
+                fillRect(MakeRect(x, tableTop, x + 1, tableBottom), border);
+            }
+        };
+        for (int line = 0; line <= rows + 1; ++line) {
+            hline(tableTop + rowH * line);
+        }
+        vline(effortLeft);
+        vline(scoreLeft);
+        vline(timeLeft);
+        vline(costLeft);
+
         const std::wstring title = modelScoreKind_ == RadarMetricKind::VisualSpatial
             ? LocalizeText(L"Visual-spatial", L"视觉空间评分")
             : LocalizeText(L"Software engineering", L"软件工程评分");
-        const int headerTop = filterTop + filterH;
-        RECT headerLeft = MakeRect(box.left + innerPad, headerTop,
-            box.right - innerPad - metricColsW - colGap, headerTop + headerH);
-        RECT headerScore = MakeRect(box.right - innerPad - metricColsW, headerTop,
-            box.right - innerPad - timeColW - colGap - costColW - colGap, headerTop + headerH);
-        RECT headerTime = MakeRect(box.right - innerPad - timeColW - colGap - costColW, headerTop,
-            box.right - innerPad - costColW - colGap, headerTop + headerH);
-        RECT headerCost = MakeRect(box.right - innerPad - costColW, headerTop,
-            box.right - innerPad, headerTop + headerH);
-        drawTextBlock(textFormatFoot_.Get(), title, headerLeft, textSecondary,
+        RECT headerName = MakeRect(tableLeft + cellPad, tableTop, effortLeft - cellPad, tableTop + rowH);
+        RECT headerEffort = MakeRect(effortLeft, tableTop, scoreLeft, tableTop + rowH);
+        RECT headerScore = MakeRect(scoreLeft, tableTop, timeLeft - cellPad, tableTop + rowH);
+        RECT headerTime = MakeRect(timeLeft, tableTop, costLeft - cellPad, tableTop + rowH);
+        RECT headerCost = MakeRect(costLeft, tableTop, tableRight - cellPad, tableTop + rowH);
+        drawTextBlock(mono, title, headerName, textSecondary,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Score", L"分数"), headerScore, textSecondary,
+        drawTextBlock(mono, LocalizeText(L"Depth", L"深度"), headerEffort, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        drawTextBlock(mono, LocalizeText(L"Score", L"分数"), headerScore, textSecondary,
             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Time", L"时间"), headerTime, textSecondary,
+        drawTextBlock(mono, LocalizeText(L"Time", L"时间"), headerTime, textSecondary,
             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"Cost", L"金额"), headerCost, textSecondary,
+        drawTextBlock(mono, LocalizeText(L"Cost", L"金额"), headerCost, textSecondary,
             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
 
-        int rowTop = headerLeft.bottom + ScaleForDpi(hwnd_, 4);
         std::vector<const ModelIqScore*> visibleScores;
         if (modelScores_.success) {
             const int start = modelScoresPage_ * kModelScoresPageSize;
@@ -2669,29 +2869,51 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
             }
         }
         if (!visibleScores.empty()) {
-            for (const ModelIqScore* scorePtr : visibleScores) {
-                const ModelIqScore& score = *scorePtr;
-                RECT nameRect = MakeRect(box.left + innerPad, rowTop,
-                    box.right - innerPad - metricColsW - colGap, rowTop + rowH);
-                RECT scoreRect = MakeRect(box.right - innerPad - metricColsW, rowTop,
-                    box.right - innerPad - timeColW - colGap - costColW - colGap, rowTop + rowH);
-                RECT timeRect = MakeRect(box.right - innerPad - timeColW - colGap - costColW, rowTop,
-                    box.right - innerPad - costColW - colGap, rowTop + rowH);
-                RECT costRect = MakeRect(box.right - innerPad - costColW, rowTop,
-                    box.right - innerPad, rowTop + rowH);
-                drawTextBlock(textFormatFoot_.Get(), score.label, nameRect, textPrimary,
+            for (int index = 0; index < static_cast<int>(visibleScores.size()); ++index) {
+                const ModelIqScore& score = *visibleScores[static_cast<size_t>(index)];
+                const int rowTop = tableTop + rowH * (index + 1);
+                if ((index % 2) == 1) {
+                    fillRect(MakeRect(tableLeft, rowTop, tableRight, rowTop + rowH), rowAlt);
+                }
+                const COLORREF seriesColor = seriesColorOf(seriesKeyOf(score));
+                fillRect(MakeRect(tableLeft, rowTop + 2, tableLeft + accentW, rowTop + rowH - 2), seriesColor);
+                RECT nameRect = MakeRect(tableLeft + accentW + cellPad, rowTop, effortLeft - ScaleForDpi(hwnd_, 4), rowTop + rowH);
+                RECT scoreRect = MakeRect(scoreLeft, rowTop, timeLeft - cellPad, rowTop + rowH);
+                RECT timeRect = MakeRect(timeLeft, rowTop, costLeft - cellPad, rowTop + rowH);
+                RECT costRect = MakeRect(costLeft, rowTop, tableRight - cellPad, rowTop + rowH);
+                drawTextBlock(mono, modelTitleOf(score), nameRect, seriesColor,
                     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-                drawTextBlock(textFormatFoot_.Get(), formatRadarScore(score.score), scoreRect,
-                    radarStatusColor(score.status),
+                if (!score.effort.empty()) {
+                    const std::wstring badge = effortBadgeOf(score.effort);
+                    const EffortInk ink = effortInkOf(score.effort);
+                    const int textW = std::max(1, static_cast<int>(std::ceil(measureTextWidth(monoBold, badge))));
+                    const int pillPadX = ScaleForDpi(hwnd_, 6);
+                    const int pillW = textW + pillPadX * 2;
+                    const int colW = std::max(0, scoreLeft - effortLeft);
+                    const int pillLeft = effortLeft + std::max(ScaleForDpi(hwnd_, 3), (colW - pillW) / 2);
+                    const int insetY = std::max(2, ScaleForDpi(hwnd_, 3));
+                    RECT pill = MakeRect(pillLeft, rowTop + insetY, pillLeft + pillW, rowTop + rowH - insetY);
+                    if (pill.right > scoreLeft - ScaleForDpi(hwnd_, 3)) {
+                        pill.right = scoreLeft - ScaleForDpi(hwnd_, 3);
+                    }
+                    const float radius = static_cast<float>(std::max(1, RectHeight(pill) / 2));
+                    fillRound(pill, ink.fill, radius);
+                    if (ink.framed) {
+                        strokeRound(pill, ink.edge, radius);
+                    }
+                    drawTextBlock(monoBold, badge, pill, ink.text,
+                        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                }
+                drawTextBlock(monoBold, formatRadarScore(score.score), scoreRect, radarStatusColor(score.status),
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-                drawTextBlock(textFormatFoot_.Get(), formatRadarDuration(score), timeRect, textSecondary,
+                drawTextBlock(mono, formatRadarDuration(score), timeRect, textPrimary,
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-                drawTextBlock(textFormatFoot_.Get(), formatRadarCost(score), costRect, textSecondary,
+                drawTextBlock(mono, formatRadarCost(score), costRect, textPrimary,
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-                rowTop += rowH;
             }
         } else {
-            RECT row = MakeRect(box.left + innerPad, rowTop, box.right - innerPad, rowTop + rowH);
+            const int rowTop = tableTop + rowH;
+            RECT row = MakeRect(tableLeft + cellPad, rowTop, tableRight - cellPad, rowTop + rowH);
             const std::wstring message = modelScoresInFlight_
                 ? std::wstring(LocalizeText(L"Loading scores...", L"正在加载评分..."))
                 : (modelScores_.success
@@ -2699,9 +2921,17 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                     : (modelScores_.errorMessage.empty()
                         ? std::wstring(LocalizeText(L"No score data", L"暂无评分数据"))
                         : modelScores_.errorMessage));
-            drawTextBlock(textFormatFoot_.Get(), message, row, textSecondary,
+            drawTextBlock(mono, message, row, textSecondary,
                 DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         }
+        for (int line = 0; line <= rows + 1; ++line) {
+            hline(tableTop + rowH * line);
+        }
+        vline(effortLeft);
+        vline(scoreLeft);
+        vline(timeLeft);
+        vline(costLeft);
+        drawRectBorder(box, border);
 
         const int pageCount = GetModelScoresPageCount();
         const int pagerTop = box.bottom - pad - footH - pagerH;
