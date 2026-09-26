@@ -140,8 +140,9 @@ public:
 
     // Force OAuth refresh and write tokens back to this account's file.
     TokenRefreshResult ForceRefreshAuthTokens(const std::wstring& authPath) const;
-    // Refresh only when the access/id token is inside the 1-day lead. Otherwise skipped.
+    // Refresh only when the access_token is inside the 1-day lead. Otherwise skipped.
     TokenRefreshResult RefreshAuthIfNeeded(const std::wstring& authPath) const;
+    UsageSnapshot ParseUsageJson(const std::string& jsonText, std::wstring* errorMessage) const;
 
     // Spends one real rate-limit reset credit. Do not call casually.
     ConsumeResetCreditResult ConsumeRateLimitResetCredit(
@@ -170,7 +171,6 @@ private:
         const AuthCredentials& credentials,
         const std::wstring& redeemRequestId,
         std::wstring* errorMessage) const;
-    UsageSnapshot ParseUsageJson(const std::string& jsonText, std::wstring* errorMessage) const;
     void EnrichSubscriptionFromIdToken(UsageSnapshot* snapshot, const std::string& idToken) const;
     RateLimitResetCreditsInfo ParseRateLimitResetCreditsJson(const std::string& jsonText, std::wstring* errorMessage) const;
     ReleaseVersionInfo ParseLatestReleaseJson(const std::string& jsonText, std::wstring* errorMessage) const;

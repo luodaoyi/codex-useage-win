@@ -1,6 +1,7 @@
 #include "AccountLibrary.h"
 #include "AppUpdate.h"
 #include "BrowserSignIn.h"
+#include "CodexUsageFetcher.h"
 #include "GrokBilling.h"
 #include "ProxyConfig.h"
 #include "QuotaEstimate.h"
@@ -184,6 +185,26 @@ void TestSessions() {
     std::filesystem::remove_all(root);
 }
 
+void TestUsageWindows() {
+    CodexUsageFetcher fetcher;
+    std::wstring error;
+    const UsageSnapshot weeklyOnly = fetcher.ParseUsageJson(
+        "{\"email\":\"branch@example.test\",\"plan_type\":\"pro\",\"rate_limit\":{\"primary_window\":{\"used_percent\":100,\"limit_window_seconds\":604800,\"reset_after_seconds\":183554,\"reset_at\":1790569802}}}",
+        &error);
+    Expect(weeklyOnly.success && weeklyOnly.weekly.available && !weeklyOnly.fiveHour.available, "weekly-only primary window");
+    Expect(weeklyOnly.weekly.usedPercent == 100 && weeklyOnly.weekly.remainingPercent == 0, "exhausted weekly remaining is 0");
+    Expect(weeklyOnly.weekly.windowSeconds == 604800, "weekly window is 7 days");
+
+    const UsageSnapshot both = fetcher.ParseUsageJson(
+        "{\"rate_limit\":{\"primary_window\":{\"used_percent\":10,\"limit_window_seconds\":18000,\"reset_after_seconds\":1000,\"reset_at\":1700000000},\"secondary_window\":{\"used_percent\":40,\"limit_window_seconds\":604800,\"reset_after_seconds\":2000,\"reset_at\":1700500000}}}",
+        &error);
+    Expect(both.success && both.fiveHour.available && both.weekly.available, "short primary is 5h");
+    Expect(both.fiveHour.remainingPercent == 90 && both.weekly.remainingPercent == 60, "remaining is 100 minus used");
+
+    const UsageSnapshot missing = fetcher.ParseUsageJson("{\"email\":\"x\"}", &error);
+    Expect(!missing.success, "usage without rate_limit windows fails");
+}
+
 void TestGrok() {
     const GrokSnapshot snapshot = ParseGrokBillingJson(
         "{\"config\":{\"creditUsagePercent\":8,\"currentPeriod\":{\"type\":\"USAGE_PERIOD_TYPE_WEEKLY\"},\"productUsage\":[{\"product\":\"GrokBuild\",\"usagePercent\":8},{\"product\":\"GrokChat\",\"usagePercent\":1},{\"product\":\"GrokImagine\",\"usagePercent\":null}],\"prepaidBalance\":{\"val\":12},\"onDemandUsed\":{\"val\":3}}}");
@@ -235,6 +256,7 @@ void TestPkce() {
 
 int main() {
     TestAccounts();
+    TestUsageWindows();
     TestResetStatus();
     TestEstimate();
     TestSessions();

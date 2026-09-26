@@ -735,7 +735,7 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
             height += ScaleForDpi(hwnd_, 40);  // compact title/meta + bar + gap
         }
         // Grow only for additional reset-credit rows (one row already in base height).
-        if (snapshot_.success && snapshot_.resetCredits.fetched) {
+        if (HasResetCreditInventory()) {
             const int extraRows = std::max(0, static_cast<int>(snapshot_.resetCredits.availableCredits.size()) - 1);
             height += extraRows * ScaleForDpi(hwnd_, 16);
         }
@@ -1912,15 +1912,16 @@ std::wstring AppBarWindow::CreateRedeemRequestId() const {
     return buffer;
 }
 
+bool AppBarWindow::HasResetCreditInventory() const {
+    return provider_ != L"grok"
+        && snapshot_.success
+        && snapshot_.resetCredits.fetched
+        && snapshot_.resetCredits.availableCount > 0;
+}
+
 std::wstring AppBarWindow::BuildResetCreditsSummaryText() const {
-    if (!snapshot_.success) {
-        return LocalizeText(L"Reset credits: --", L"重置卡: --");
-    }
-    if (!snapshot_.resetCredits.fetched) {
-        if (!snapshot_.resetCredits.errorMessage.empty()) {
-            return LocalizeText(L"Reset credits: unavailable", L"重置卡: 不可用");
-        }
-        return LocalizeText(L"Reset credits: --", L"重置卡: --");
+    if (!HasResetCreditInventory()) {
+        return {};
     }
     return std::wstring(LocalizeText(L"Reset credits: ", L"重置卡: "))
         + std::to_wstring(snapshot_.resetCredits.availableCount)
@@ -1962,8 +1963,12 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
                     accountDropOpen_ = false;
                     SaveActiveAuth();
                     SaveFeatureSettings();
+                    resetCreditConfirmStep_ = 0;
+                    KillTimer(hwnd_, kResetConfirmTimerId);
+                    resetCreditActionMessage_.clear();
                     snapshot_ = {};
                     grok_ = {};
+                    snapshot_.errorMessage = LocalizeText(L"Switching account...", L"正在切换账号...");
                     RequestRefresh(true);
                     break;
                 }
@@ -2268,8 +2273,6 @@ void AppBarWindow::OnTokenMaintenance(TokenMaintenanceReport* report) {
             + std::to_wstring(holder->refreshed)
             + LocalizeText(L" token(s)", L" 个 Token");
         RequestRefresh(true);
-    } else if (holder->failed > 0 && !holder->error.empty()) {
-        resetCreditActionMessage_ = holder->error;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -3483,7 +3486,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         drawTextBlock(textFormatMetricLabel_.Get(), statusText, statusRect, statusColor,
             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
 
-        const int resetBandHeight = ScaleForDpi(hwnd_, 18);
+        const int resetBandHeight = HasResetCreditInventory() ? ScaleForDpi(hwnd_, 18) : 0;
         RECT cardsRect = MakeRect(clientRect.left + innerPad, clientRect.top + topBandHeight + ScaleForDpi(hwnd_, 2),
             clientRect.right - innerPad,
             clientRect.bottom - footerHeight - resetBandHeight - GetModelScoresPanelHeight() - ScaleForDpi(hwnd_, 6));
@@ -3519,15 +3522,17 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 value);
         }
 
-        const std::wstring resetSummary = BuildResetCreditsSummaryText();
-        const std::wstring resetExpiry = BuildResetCreditsExpiryText();
-        RECT resetSummaryRect = MakeRect(clientRect.left + innerPad, cardsRect.bottom + ScaleForDpi(hwnd_, 2),
-            clientRect.right - innerPad, cardsRect.bottom + resetBandHeight);
-        drawTextBlock(textFormatFoot_.Get(), resetSummary + L" · " + resetExpiry, resetSummaryRect, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        if (resetBandHeight > 0) {
+            const std::wstring resetSummary = BuildResetCreditsSummaryText();
+            const std::wstring resetExpiry = BuildResetCreditsExpiryText();
+            RECT resetSummaryRect = MakeRect(clientRect.left + innerPad, cardsRect.bottom + ScaleForDpi(hwnd_, 2),
+                clientRect.right - innerPad, cardsRect.bottom + resetBandHeight);
+            drawTextBlock(textFormatFoot_.Get(), resetSummary + L" · " + resetExpiry, resetSummaryRect, textSecondary,
+                DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        }
         if (!resetCreditActionMessage_.empty()) {
             RECT actionMsg = MakeRect(clientRect.left + innerPad, cardsRect.bottom + ScaleForDpi(hwnd_, 2),
-                clientRect.right - innerPad, cardsRect.bottom + resetBandHeight);
+                clientRect.right - innerPad, cardsRect.bottom + std::max(resetBandHeight, ScaleForDpi(hwnd_, 18)));
             drawTextBlock(textFormatFoot_.Get(), resetCreditActionMessage_, actionMsg,
                 lightTheme_ ? RGB(176, 78, 18) : RGB(255, 186, 120),
                 DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
@@ -3798,7 +3803,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
 
     y += ScaleForDpi(hwnd_, 18);
     }
-    if (resetStatusEnabled_) {
+    if (provider_ != L"grok" && resetStatusEnabled_) {
         const long long resetUnix = Iso8601ToUnix(resetStatus_.whenText);
         const std::wstring resetWhen = resetUnix > 0 ? FormatFullDateTime(resetUnix) : resetStatus_.whenText;
         const std::wstring resetLine = resetStatus_.success
@@ -3811,53 +3816,34 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     } else {
         resetLinkRect_ = {};
     }
-    if (estimateEnabled_) {
+    if (provider_ != L"grok" && estimateEnabled_) {
         RECT estimateRect = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + ScaleForDpi(hwnd_, 16));
         drawTextBlock(textFormatFoot_.Get(), estimate_.summary.empty() ? std::wstring(L"weekly estimate") : estimate_.summary, estimateRect, textSecondary,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         y += ScaleForDpi(hwnd_, 18);
     }
 
-    // Reset credits inventory: header + one row per credit (screenshot style).
-    const int creditCount = snapshot_.resetCredits.fetched
-        ? static_cast<int>(snapshot_.resetCredits.availableCredits.size())
-        : 0;
-    const int creditRows = snapshot_.resetCredits.fetched
-        ? std::max(1, creditCount)
-        : 1;
-    const int creditRowH = ScaleForDpi(hwnd_, 16);
-    const int creditHeaderH = ScaleForDpi(hwnd_, 16);
-    const int creditBoxH = ScaleForDpi(hwnd_, 4) + creditHeaderH + creditRows * creditRowH + ScaleForDpi(hwnd_, 2);
-    RECT creditBox = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + creditBoxH);
-    fillRect(creditBox, lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36));
-    drawRectBorder(creditBox, border);
+    if (HasResetCreditInventory()) {
+        const int creditCount = static_cast<int>(snapshot_.resetCredits.availableCredits.size());
+        const int creditRows = std::max(1, creditCount);
+        const int creditRowH = ScaleForDpi(hwnd_, 16);
+        const int creditHeaderH = ScaleForDpi(hwnd_, 16);
+        const int creditBoxH = ScaleForDpi(hwnd_, 4) + creditHeaderH + creditRows * creditRowH + ScaleForDpi(hwnd_, 2);
+        RECT creditBox = MakeRect(clientRect.left + padX, y, clientRect.right - padX, y + creditBoxH);
+        fillRect(creditBox, lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36));
+        drawRectBorder(creditBox, border);
 
-    RECT creditsTitleRect = MakeRect(creditBox.left + ScaleForDpi(hwnd_, 8), creditBox.top + ScaleForDpi(hwnd_, 2),
-        creditBox.right - ScaleForDpi(hwnd_, 8), creditBox.top + ScaleForDpi(hwnd_, 2) + creditHeaderH);
-    const std::wstring creditsTitle =
-        std::wstring(LocalizeText(L"Manual reset expiry (local)", L"主动重置过期时间"))
-        + L"  ·  "
-        + std::to_wstring(snapshot_.resetCredits.fetched ? snapshot_.resetCredits.availableCount : 0)
-        + LocalizeText(L" available", L" 张");
-    drawTextBlock(textFormatFoot_.Get(), creditsTitle, creditsTitleRect, textSecondary,
-        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        RECT creditsTitleRect = MakeRect(creditBox.left + ScaleForDpi(hwnd_, 8), creditBox.top + ScaleForDpi(hwnd_, 2),
+            creditBox.right - ScaleForDpi(hwnd_, 8), creditBox.top + ScaleForDpi(hwnd_, 2) + creditHeaderH);
+        const std::wstring creditsTitle =
+            std::wstring(LocalizeText(L"Manual reset expiry (local)", L"主动重置过期时间"))
+            + L"  ·  "
+            + std::to_wstring(snapshot_.resetCredits.availableCount)
+            + LocalizeText(L" available", L" 张");
+        drawTextBlock(textFormatFoot_.Get(), creditsTitle, creditsTitleRect, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
 
-    int creditY = creditsTitleRect.bottom;
-    if (!snapshot_.resetCredits.fetched) {
-        RECT row = MakeRect(creditBox.left + ScaleForDpi(hwnd_, 8), creditY,
-            creditBox.right - ScaleForDpi(hwnd_, 8), creditY + creditRowH);
-        drawTextBlock(textFormatFoot_.Get(),
-            snapshot_.resetCredits.errorMessage.empty()
-                ? LocalizeText(L"Unavailable", L"不可用")
-                : snapshot_.resetCredits.errorMessage,
-            row, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-    } else if (creditCount == 0) {
-        RECT row = MakeRect(creditBox.left + ScaleForDpi(hwnd_, 8), creditY,
-            creditBox.right - ScaleForDpi(hwnd_, 8), creditY + creditRowH);
-        drawTextBlock(textFormatFoot_.Get(), LocalizeText(L"None available", L"暂无可用"), row, textSecondary,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-    } else {
+        int creditY = creditsTitleRect.bottom;
         for (int i = 0; i < creditCount; ++i) {
             const RateLimitResetCredit& credit = snapshot_.resetCredits.availableCredits[static_cast<size_t>(i)];
             RECT left = MakeRect(creditBox.left + ScaleForDpi(hwnd_, 8), creditY,
@@ -3875,17 +3861,18 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
             creditY += creditRowH;
         }
+        y = creditBox.bottom + ScaleForDpi(hwnd_, 6);
     }
     if (!resetCreditActionMessage_.empty()) {
-        RECT actionMsg = MakeRect(creditBox.left + ScaleForDpi(hwnd_, 8), creditBox.bottom - ScaleForDpi(hwnd_, 2),
-            creditBox.right - ScaleForDpi(hwnd_, 8), creditBox.bottom + ScaleForDpi(hwnd_, 12));
+        RECT actionMsg = MakeRect(clientRect.left + padX, y,
+            clientRect.right - padX, y + ScaleForDpi(hwnd_, 16));
         drawTextBlock(textFormatFoot_.Get(), resetCreditActionMessage_, actionMsg,
             lightTheme_ ? RGB(176, 78, 18) : RGB(255, 186, 120),
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+        y += ScaleForDpi(hwnd_, 18);
     }
 
     // Limit bars: hide lanes the API no longer returns (currently often weekly-only).
-    y = creditBox.bottom + ScaleForDpi(hwnd_, 6);
     if (provider_ != L"grok" && snapshot_.fiveHour.available) {
         y += drawUsageBar(
             y,
@@ -4131,6 +4118,9 @@ void AppBarWindow::HandleMenuCommand(UINT command) {
     } else if (command == kCommandProviderCodex || command == kCommandProviderGrok) {
         provider_ = command == kCommandProviderGrok ? L"grok" : L"codex";
         activeAuthId_.clear();
+        resetCreditActionMessage_.clear();
+        snapshot_ = {};
+        grok_ = {};
         SaveFeatureSettings();
         RequestRefresh(true);
     } else if (command == kCommandResetStatusToggle) {

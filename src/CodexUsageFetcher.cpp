@@ -956,14 +956,15 @@ bool CredentialsNeedProactiveRefresh(const CodexUsageFetcher::AuthCredentials& c
     if (credentials.refreshToken.empty()) {
         return false;
     }
+    // Usage and reset-credit APIs authenticate with access_token. id_token often
+    // expires days earlier; treating that as a refresh trigger spams
+    // auth.openai.com/oauth/token and paints HTTP 401 on the usage card while
+    // weekly limits still load.
+    if (credentials.accessToken.empty()) {
+        return true;
+    }
     const long long nowUnix = static_cast<long long>(std::time(nullptr));
-    if (!credentials.accessToken.empty() && TokenNeedsProactiveRefresh(credentials.accessToken, nowUnix)) {
-        return true;
-    }
-    if (!credentials.idToken.empty() && TokenNeedsProactiveRefresh(credentials.idToken, nowUnix)) {
-        return true;
-    }
-    return false;
+    return TokenNeedsProactiveRefresh(credentials.accessToken, nowUnix);
 }
 
 }  // namespace
@@ -978,7 +979,7 @@ UsageSnapshot CodexUsageFetcher::Fetch(const std::wstring& authPath) const {
         return snapshot;
     }
 
-    // Proactive OAuth refresh only when access/id token is within 1 day of exp.
+    // Proactive OAuth refresh only when access_token is within 1 day of exp.
     // Failures fall back to existing tokens so usage still loads.
     if (CredentialsNeedProactiveRefresh(*credentials)) {
         std::wstring refreshError;
@@ -994,6 +995,8 @@ UsageSnapshot CodexUsageFetcher::Fetch(const std::wstring& authPath) const {
             std::wstring refreshError;
             if (RefreshAuthCredentials(&*credentials, &refreshError)) {
                 usageJson = HttpGetUsageJson(*credentials, &errorMessage);
+            } else if (!refreshError.empty()) {
+                errorMessage = refreshError;
             }
         }
         if (!usageJson.has_value()) {

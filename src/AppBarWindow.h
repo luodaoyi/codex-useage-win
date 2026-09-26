@@ -228,6 +228,7 @@ private:
     void RestartModelScoresTimer();
     int GetModelScoresPanelHeight() const;
     bool TryHandleActionButtonClick(POINT clientPoint);
+    bool HasResetCreditInventory() const;
     std::wstring BuildResetCreditsSummaryText() const;
     std::wstring BuildResetCreditsExpiryText() const;
     std::wstring CreateRedeemRequestId() const;
