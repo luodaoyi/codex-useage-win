@@ -33,8 +33,6 @@ public:
     AccountOpResult SetAlias(const std::wstring& id, const std::wstring& alias);
     AccountOpResult Move(const std::wstring& id, int delta);
     AccountOpResult Delete(const std::wstring& id);
-    // Copy exe-directory auth JSON into accounts\ without modifying the source.
-    int ImportSiblingAuthFiles();
 
 private:
     std::wstring root_;

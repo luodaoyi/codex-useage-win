@@ -329,7 +329,6 @@ bool AppBarWindow::Create() {
     RegisterWindowClass();
     LoadSettings();
     LoadFeatureSettings();
-    accounts_.ImportSiblingAuthFiles();
     for (const AccountEntry& account : accounts_.List(L"")) {
         if (_wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0 && !account.provider.empty()) {
             provider_ = account.provider;

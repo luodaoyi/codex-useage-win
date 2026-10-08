@@ -600,31 +600,3 @@ AccountOpResult AccountLibrary::Delete(const std::wstring& id) {
     result.id = id;
     return result;
 }
-
-int AccountLibrary::ImportSiblingAuthFiles() {
-    int imported = 0;
-    std::error_code error;
-    if (!std::filesystem::is_directory(root_, error) || error) {
-        return 0;
-    }
-    for (const auto& entry : std::filesystem::directory_iterator(root_, error)) {
-        if (error || !entry.is_regular_file()) {
-            continue;
-        }
-        if (_wcsicmp(entry.path().extension().c_str(), L".json") != 0) {
-            continue;
-        }
-        if (EqualsIgnoreCase(entry.path().filename().wstring(), L"index.json")) {
-            continue;
-        }
-        const std::string text = ReadFile(entry.path().wstring());
-        if (text.find("access_token") == std::string::npos) {
-            continue;
-        }
-        const AccountOpResult result = ImportText(text, L"codex");
-        if (result.success) {
-            ++imported;
-        }
-    }
-    return imported;
-}
