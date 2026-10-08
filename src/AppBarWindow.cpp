@@ -50,6 +50,7 @@ constexpr UINT kCommandRefreshToken = 18;
 constexpr UINT kCommandModelScoresOff = 19;
 constexpr UINT kCommandModelScoresSoftware = 20;
 constexpr UINT kCommandModelScoresVisual = 21;
+constexpr UINT kCommandModelScoresToggle = 42;
 constexpr UINT kCommandResetCredit = 22;
 constexpr UINT kCommandImportAccount = 23;
 constexpr UINT kCommandPasteImport = 24;
@@ -725,7 +726,7 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
     }
     if (surface_ == Surface::Settings) {
         const int accountRows = static_cast<int>(accounts_.List(L"").size());
-        return chrome + ScaleForDpi(hwnd_, 808 + accountRows * 30) + dropExtra;
+        return chrome + ScaleForDpi(hwnd_, 848 + accountRows * 30) + dropExtra;
     }
     if (surface_ == Surface::Accounts) {
         const int count = static_cast<int>(accounts_.List(provider_).size());
@@ -2405,6 +2406,10 @@ void AppBarWindow::SetModelScoreMode(bool enabled, RadarMetricKind kind) {
     }
     modelScores_ = {};
     modelScoresPage_ = 0;
+    const std::wstring settingsPath = GetSettingsPath();
+    std::error_code settingsError;
+    std::filesystem::create_directories(std::filesystem::path(settingsPath).parent_path(), settingsError);
+    WritePrivateProfileStringW(L"layout", L"show_model_scores", showModelScores_ ? L"1" : L"0", settingsPath.c_str());
     SaveSettings();
     RestartModelScoresTimer();
     if (showModelScores_) {
@@ -3302,12 +3307,14 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 wrapChips({
                     {LocalizeText(L"Reset news", L"重置公告"), kCommandResetStatusToggle},
                     {LocalizeText(L"Estimate", L"周估算"), kCommandEstimateToggle},
+                    {LocalizeText(L"Codex Radar", L"Codex 雷达"), kCommandModelScoresToggle},
                     {LocalizeText(L"On top", L"置顶"), kCommandAlwaysOnTop},
                     {LocalizeText(L"Lock", L"锁定"), kCommandLockPosition},
                     {LocalizeText(L"Startup", L"开机启动"), kCommandLaunchAtStartup},
                 }, [&](UINT command) {
                     return (command == kCommandResetStatusToggle && resetStatusEnabled_)
                         || (command == kCommandEstimateToggle && estimateEnabled_)
+                        || (command == kCommandModelScoresToggle && showModelScores_)
                         || (command == kCommandAlwaysOnTop && alwaysOnTop_)
                         || (command == kCommandLockPosition && lockPosition_)
                         || (command == kCommandLaunchAtStartup && IsLaunchAtStartupEnabled());
@@ -4264,6 +4271,8 @@ void AppBarWindow::HandleMenuCommand(UINT command) {
         SetDisplayMode(true, false);
     } else if (command == kCommandTaskbarMode) {
         SetDisplayMode(false, true);
+    } else if (command == kCommandModelScoresToggle) {
+        SetModelScoreMode(!showModelScores_, modelScoreKind_);
     } else if (command == kCommandModelScoresOff) {
         SetModelScoreMode(false, modelScoreKind_);
     } else if (command == kCommandModelScoresSoftware) {
