@@ -163,6 +163,7 @@ bool ParseOAuthTokenJson(const std::string& jsonText, std::string* access, std::
 
 BrowserSignInResult RunBrowserSignIn(SignInProvider provider, const std::wstring& accountsRoot) {
     BrowserSignInResult result;
+    result.provider = provider;
     WSADATA wsa = {};
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         result.error = L"winsock startup failed";

@@ -69,6 +69,7 @@ constexpr UINT kCommandChartBar = 37;
 constexpr UINT kCommandProviderCodex = 38;
 constexpr UINT kCommandProviderGrok = 39;
 constexpr UINT kCommandBrowserLogin = 40;
+constexpr UINT kCommandBrowserLoginGrok = 41;
 constexpr UINT kCommandProxySystem = 44;
 constexpr UINT kCommandProxyHttp = 45;
 constexpr UINT kCommandProxySocks = 46;
@@ -563,8 +564,13 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             std::unique_ptr<BrowserSignInResult> result(reinterpret_cast<BrowserSignInResult*>(lParam));
             browserSignInInFlight_ = false;
             if (result != nullptr && result->success) {
+                provider_ = result->provider == SignInProvider::Grok ? L"grok" : L"codex";
                 activeAuthId_ = result->accountId;
                 SaveActiveAuth();
+                SaveFeatureSettings();
+                snapshot_ = {};
+                grok_ = {};
+                resetCreditActionMessage_.clear();
                 RequestRefresh(true);
             } else {
                 resetCreditActionMessage_ = result != nullptr ? result->error : L"browser login failed";
@@ -719,14 +725,16 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
     }
     if (surface_ == Surface::Settings) {
         const int accountRows = static_cast<int>(accounts_.List(L"").size());
-        return chrome + ScaleForDpi(hwnd_, 760 + accountRows * 30) + dropExtra;
+        return chrome + ScaleForDpi(hwnd_, 808 + accountRows * 30) + dropExtra;
     }
     if (surface_ == Surface::Accounts) {
         const int count = static_cast<int>(accounts_.List(provider_).size());
-        return chrome + ScaleForDpi(hwnd_, 150 + count * 40);
+        return chrome + ScaleForDpi(hwnd_, 190 + count * 40);
     }
     int height = 0;
-    if (simpleMode_) {
+    if (provider_ == L"grok") {
+        height = GrokUsageBodyHeight();
+    } else if (simpleMode_) {
         height = CalculateSimpleMinimumWidgetHeight(hwnd_);
     } else {
         // Base = weekly-only layout; add a full limit-row block when 5h is present.
@@ -734,19 +742,46 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
         if (snapshot_.fiveHour.available) {
             height += ScaleForDpi(hwnd_, 40);  // compact title/meta + bar + gap
         }
-        // Grow only for additional reset-credit rows (one row already in base height).
         if (HasResetCreditInventory()) {
             const int extraRows = std::max(0, static_cast<int>(snapshot_.resetCredits.availableCredits.size()) - 1);
             height += extraRows * ScaleForDpi(hwnd_, 16);
+        } else {
+            // Base 184 still budgets one credit box. Hide that reservation when empty.
+            height -= ScaleForDpi(hwnd_, 44);
         }
-        height = std::max(height, ScaleForDpi(hwnd_, 164));
+        height = std::max(height, ScaleForDpi(hwnd_, HasResetCreditInventory() ? 164 : 140));
     }
     height += GetModelScoresPanelHeight();
     height += ExtraFeatureHeight();
     height += chrome + dropExtra;
-    if (provider_ == L"grok") {
-        height += ScaleForDpi(hwnd_, 96);
+    return height;
+}
+
+int AppBarWindow::GrokUsageBodyHeight() const {
+    int height = ScaleForDpi(hwnd_, kVerticalPadding);
+    height += ScaleForDpi(hwnd_, 24);
+    height += ScaleForDpi(hwnd_, 8);
+    if (!grok_.success) {
+        height += ScaleForDpi(hwnd_, 52);
+    } else {
+        int meters = grok_.hasUsagePercent ? 1 : 0;
+        for (const GrokProduct& product : grok_.products) {
+            if (product.hasPercent) {
+                ++meters;
+            }
+        }
+        height += meters * ScaleForDpi(hwnd_, 38);
+        if (grok_.hasPrepaid || grok_.hasOnDemand) {
+            height += ScaleForDpi(hwnd_, 20);
+        }
+        if (!grok_.periodEnd.empty()) {
+            height += ScaleForDpi(hwnd_, 22);
+        }
     }
+    if (!resetCreditActionMessage_.empty()) {
+        height += ScaleForDpi(hwnd_, 18);
+    }
+    height += ScaleForDpi(hwnd_, 4 + 18);
     return height;
 }
 
@@ -3170,7 +3205,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 wrapChips({
                     {LocalizeText(L"Import", L"导入文件"), kCommandImportAccount},
                     {LocalizeText(L"Paste", L"粘贴"), kCommandPasteImport},
-                    {LocalizeText(L"Browser", L"浏览器登录"), kCommandBrowserLogin},
+                    {LocalizeText(L"Browser Codex", L"浏览器登录 Codex"), kCommandBrowserLogin},
+                    {LocalizeText(L"Browser Grok", L"浏览器登录 Grok"), kCommandBrowserLoginGrok},
                     {LocalizeText(L"Rename", L"重命名"), kCommandAlias},
                     {LocalizeText(L"Delete", L"删除"), kCommandDeleteAccount},
                 }, [](UINT) { return false; });
@@ -3217,7 +3253,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 wrapChips({
                     {LocalizeText(L"Import", L"导入文件"), kCommandImportAccount},
                     {LocalizeText(L"Paste", L"粘贴"), kCommandPasteImport},
-                    {LocalizeText(L"Browser", L"浏览器登录"), kCommandBrowserLogin},
+                    {LocalizeText(L"Browser Codex", L"浏览器登录 Codex"), kCommandBrowserLogin},
+                    {LocalizeText(L"Browser Grok", L"浏览器登录 Grok"), kCommandBrowserLoginGrok},
                 }, [](UINT) { return false; });
                 section(LocalizeText(L"Display", L"显示"));
                 wrapChips({
@@ -3999,7 +4036,8 @@ HMENU AppBarWindow::CreateContextMenuHandle() {
     }
     AppendMenuW(accountMenu, MF_STRING, kCommandImportAccount, Tr(L"Import file...", L"从文件导入…", L"從檔案匯入…", L"파일에서 가져오기…", L"ファイルから取り込み…", L"Импорт из файла…", L"Importer un fichier…"));
     AppendMenuW(accountMenu, MF_STRING, kCommandPasteImport, Tr(L"Paste JSON...", L"粘贴 JSON…", L"貼上 JSON…", L"JSON 붙여넣기…", L"JSON を貼り付け…", L"Вставить JSON…", L"Coller le JSON…"));
-    AppendMenuW(accountMenu, MF_STRING, kCommandBrowserLogin, Tr(L"Browser sign-in...", L"浏览器登录…", L"瀏覽器登入…", L"브라우저 로그인…", L"ブラウザでログイン…", L"Вход через браузер…", L"Connexion navigateur…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandBrowserLogin, Tr(L"Browser sign-in Codex...", L"浏览器登录 Codex…", L"瀏覽器登入 Codex…", L"브라우저 Codex 로그인…", L"ブラウザで Codex ログイン…", L"Вход Codex через браузер…", L"Connexion navigateur Codex…"));
+    AppendMenuW(accountMenu, MF_STRING, kCommandBrowserLoginGrok, Tr(L"Browser sign-in Grok...", L"浏览器登录 Grok…", L"瀏覽器登入 Grok…", L"브라우저 Grok 로그인…", L"ブラウザで Grok ログイン…", L"Вход Grok через браузер…", L"Connexion navigateur Grok…"));
     AppendMenuW(accountMenu, MF_STRING, kCommandAlias, Tr(L"Rename...", L"重命名…", L"重新命名…", L"이름 바꾸기…", L"名前を変更…", L"Переименовать…", L"Renommer…"));
     AppendMenuW(accountMenu, MF_STRING, kCommandMoveUp, Tr(L"Move up", L"上移", L"上移", L"위로", L"上へ", L"Выше", L"Monter"));
     AppendMenuW(accountMenu, MF_STRING, kCommandMoveDown, Tr(L"Move down", L"下移", L"下移", L"아래로", L"下へ", L"Ниже", L"Descendre"));
@@ -4113,8 +4151,8 @@ void AppBarWindow::HandleMenuCommand(UINT command) {
         MoveActiveAccount(1);
     } else if (command == kCommandDeleteAccount) {
         DeleteActiveAccount();
-    } else if (command == kCommandBrowserLogin) {
-        StartBrowserSignIn();
+    } else if (command == kCommandBrowserLogin || command == kCommandBrowserLoginGrok) {
+        StartBrowserSignIn(command == kCommandBrowserLoginGrok ? SignInProvider::Grok : SignInProvider::Codex);
     } else if (command == kCommandProviderCodex || command == kCommandProviderGrok) {
         provider_ = command == kCommandProviderGrok ? L"grok" : L"codex";
         activeAuthId_.clear();
@@ -4349,6 +4387,8 @@ LRESULT CALLBACK StickyMenuProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         }
         const bool closes = entry.command == kCommandImportAccount
             || entry.command == kCommandPasteImport
+            || entry.command == kCommandBrowserLogin
+            || entry.command == kCommandBrowserLoginGrok
             || entry.command == kCommandAlias
             || entry.command == kCommandDeleteAccount
             || entry.command == kCommandProxyEdit

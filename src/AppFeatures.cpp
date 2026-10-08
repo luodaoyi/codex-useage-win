@@ -186,7 +186,7 @@ int AppBarWindow::ExtraFeatureHeight() const {
     const int dpi = static_cast<int>(GetDpiForWindow(hwnd_));
     auto scale = [&](int value) { return MulDiv(value, dpi > 0 ? dpi : 96, 96); };
     int height = 0;
-    if (resetStatusEnabled_) {
+    if (provider_ != L"grok" && resetStatusEnabled_) {
         height += scale(18);
     }
     if (estimateEnabled_ && provider_ == L"codex") {
@@ -362,12 +362,11 @@ void AppBarWindow::DeleteAccountById(const std::wstring& id) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void AppBarWindow::StartBrowserSignIn() {
+void AppBarWindow::StartBrowserSignIn(SignInProvider provider) {
     if (browserSignInInFlight_.exchange(true)) {
         return;
     }
     const HWND target = hwnd_;
-    const SignInProvider provider = provider_ == L"grok" ? SignInProvider::Grok : SignInProvider::Codex;
     const std::wstring root = accounts_.RootDirectory();
     std::thread([this, target, provider, root]() {
         auto* result = new BrowserSignInResult(RunBrowserSignIn(provider, root));

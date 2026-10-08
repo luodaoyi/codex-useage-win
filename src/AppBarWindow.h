@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AccountLibrary.h"
+#include "BrowserSignIn.h"
 #include "CodexUsageFetcher.h"
 #include "GrokBilling.h"
 #include "ProxyConfig.h"
@@ -150,6 +151,7 @@ private:
     std::wstring ActiveAuthPath() const;
     bool IsActiveAuth(const AccountEntry& account) const;
     int ExtraFeatureHeight() const;
+    int GrokUsageBodyHeight() const;
     void ReloadAccounts();
     void PasteImport(const std::wstring& provider);
     void RenameActiveAccount();
@@ -157,7 +159,7 @@ private:
     void MoveActiveAccount(int delta);
     void DeleteActiveAccount();
     void DeleteAccountById(const std::wstring& id);
-    void StartBrowserSignIn();
+    void StartBrowserSignIn(SignInProvider provider);
     void RequestResetStatus();
     void RequestSessionScan();
     void RepairSessions();

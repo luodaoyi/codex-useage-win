@@ -2,21 +2,22 @@
 
 #include <string>
 
+enum class SignInProvider {
+    Codex = 0,
+    Grok = 1,
+};
+
 struct BrowserSignInResult {
     bool success = false;
     std::wstring accountId;
     std::wstring error;
+    SignInProvider provider = SignInProvider::Codex;
 };
 
 struct PkceMaterial {
     std::string verifier;
     std::string challenge;
     std::string state;
-};
-
-enum class SignInProvider {
-    Codex = 0,
-    Grok = 1,
 };
 
 PkceMaterial MakePkceMaterial();
