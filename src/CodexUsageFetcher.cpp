@@ -643,7 +643,8 @@ std::optional<std::string> HttpExchange(
     const std::wstring& method,
     const std::vector<std::wstring>& headers,
     const std::string* body,
-    std::wstring* errorMessage) {
+    std::wstring* errorMessage,
+    const char* stopMarker = nullptr) {
     if (errorMessage != nullptr) {
         errorMessage->clear();
     }
@@ -725,6 +726,11 @@ std::optional<std::string> HttpExchange(
 
         DWORD timeout = 15000;
         WinHttpSetTimeouts(request, timeout, timeout, timeout, timeout);
+        if (stopMarker != nullptr) {
+            const DWORD decompression = WINHTTP_DECOMPRESSION_FLAG_GZIP | WINHTTP_DECOMPRESSION_FLAG_DEFLATE;
+            WinHttpSetOption(request, WINHTTP_OPTION_DECOMPRESSION,
+                const_cast<DWORD*>(&decompression), sizeof(decompression));
+        }
         if (configured.mode == ProxyConfig::Mode::Http && !configured.user.empty()) {
             WinHttpSetOption(request, WINHTTP_OPTION_PROXY_USERNAME,
                 const_cast<wchar_t*>(configured.user.c_str()),
@@ -816,6 +822,10 @@ std::optional<std::string> HttpExchange(
 
             chunk.resize(downloaded);
             response.append(chunk);
+            if (stopMarker != nullptr && response.find(stopMarker) != std::string::npos) {
+                responseBody = std::move(response);
+                break;
+            }
         }
     } while (false);
 
@@ -1355,162 +1365,59 @@ ReleaseVersionInfo CodexUsageFetcher::FetchLatestRelease() const {
     return info;
 }
 
+std::string WithoutJsonHistory(const std::string& jsonText) {
+    size_t pos = jsonText.find("\n  \"history\"");
+    if (pos == std::string::npos) {
+        pos = jsonText.find(",\"history\"");
+    }
+    if (pos == std::string::npos) {
+        return jsonText;
+    }
+    size_t end = pos;
+    while (end > 0
+        && (jsonText[end - 1] == ' ' || jsonText[end - 1] == '\n'
+            || jsonText[end - 1] == '\r' || jsonText[end - 1] == '\t')) {
+        --end;
+    }
+    if (end > 0 && jsonText[end - 1] == ',') {
+        --end;
+    }
+    std::string trimmed = jsonText.substr(0, end);
+    trimmed += "\n}\n";
+    return trimmed;
+}
+
 ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     ModelIqSnapshot snapshot;
     snapshot.kind = kind;
 
     std::wstring errorMessage;
-    const std::optional<std::string> bindingJson = HttpGetCodexRadarMetricsJson(
+    const std::optional<std::string> catalogJson = HttpExchange(
+        L"CodexUsageBar/0.1",
         L"codexradar.com",
-        L"/data/radar-bench-binding.json",
-        &errorMessage);
-    if (!bindingJson.has_value()) {
+        L"/data/intelligence-efficiency.json?v=station-preview-v1",
+        L"GET",
+        {
+            L"Accept: application/json",
+            L"Cache-Control: no-cache",
+            L"User-Agent: CodexUsageBar",
+        },
+        nullptr,
+        &errorMessage,
+        "\"history\":");
+    if (!catalogJson.has_value()) {
         snapshot.errorMessage = errorMessage.empty() ? L"CodexRadar request failed" : errorMessage;
         return snapshot;
     }
 
-    std::string benchmark;
-    const std::optional<std::vector<RadarBenchSelection>> selections = ParseRadarBenchBinding(
-        *bindingJson,
-        &benchmark,
-        &errorMessage);
-    if (!selections.has_value()) {
-        snapshot.errorMessage = errorMessage.empty() ? L"CodexRadar binding rejected" : errorMessage;
-        return snapshot;
-    }
-
-    std::vector<std::optional<std::string>> bodies(selections->size());
-    std::vector<std::wstring> errors(selections->size());
-    std::atomic<size_t> cursor{0};
-    const size_t workerCount = std::min<size_t>(3, selections->size());
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount);
-    for (size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
-        workers.emplace_back([&]() {
-            for (;;) {
-                const size_t index = cursor.fetch_add(1);
-                if (index >= selections->size()) {
-                    return;
-                }
-                const RadarBenchSelection& selection = (*selections)[index];
-                const std::wstring path = Utf8ToWide(
-                    "/api/radar-bench-score?model=" + UrlQueryEncode(selection.model)
-                    + "&effort=" + UrlQueryEncode(selection.effort)
-                    + "&view=summary&selection=user-selected-v1");
-                std::wstring cellError;
-                std::optional<std::string> json = HttpGetJson(
-                    L"CodexUsageBar/0.1",
-                    L"codexradar.com",
-                    path,
-                    {
-                        L"Accept: application/json",
-                        L"Cache-Control: no-cache",
-                        L"User-Agent: CodexUsageBar",
-                        L"X-Radar-Bench-Selection: user-selected-v1",
-                    },
-                    &cellError);
-                if (json.has_value()) {
-                    bodies[index] = std::move(*json);
-                } else {
-                    errors[index] = cellError.empty() ? L"CodexRadar request failed" : cellError;
-                }
-            }
-        });
-    }
-    for (std::thread& worker : workers) {
-        worker.join();
-    }
-
-    snapshot.benchmarkId = Utf8ToWide(benchmark);
-    std::wstring firstError;
-    std::map<std::wstring, ModelIqScore> uniqueScores;
-    for (size_t index = 0; index < bodies.size(); ++index) {
-        if (!bodies[index].has_value()) {
-            if (firstError.empty()) {
-                firstError = errors[index];
-            }
-            continue;
-        }
-        const std::string& jsonText = *bodies[index];
-        if (const size_t firstChar = jsonText.find_first_not_of(" \t\r\n");
-            firstChar != std::string::npos && jsonText[firstChar] == '<') {
-            if (firstError.empty()) {
-                firstError = L"CodexRadar returned HTML instead of JSON (endpoint likely removed)";
-            }
-            continue;
-        }
-
-        jsonlite::Parser parser(jsonText);
-        std::optional<jsonlite::Value> root = parser.Parse();
-        if (!root.has_value()) {
-            if (firstError.empty()) {
-                firstError = L"CodexRadar JSON parse failed: " + Utf8ToWide(parser.Error());
-            }
-            continue;
-        }
-
-        ModelIqScore score;
-        std::wstring parseError;
-        if (!FillModelIqScoreFromRadarSummary(*root, benchmark, &score, &parseError)) {
-            if (firstError.empty()) {
-                firstError = parseError;
-            }
-            continue;
-        }
-        const RadarBenchSelection& selection = (*selections)[index];
-        if (score.model != Utf8ToWide(selection.model) || score.effort != Utf8ToWide(selection.effort)) {
-            if (firstError.empty()) {
-                firstError = L"CodexRadar summary selection mismatch";
-            }
-            continue;
-        }
-        const std::wstring key = ModelIqDedupKey(score);
-        if (key.empty() || uniqueScores.find(key) != uniqueScores.end()) {
-            continue;
-        }
-        uniqueScores.emplace(key, std::move(score));
-    }
-
-    // RadarBench only publishes Codex GPT cells. Other families stay on the
-    // station catalog. Existing RadarBench keys win, so GPT scores stay current.
-    std::wstring catalogError;
-    if (const std::optional<std::string> catalogJson = HttpGetCodexRadarMetricsJson(
-            L"codexradar.com",
-            L"/data/intelligence-efficiency.json?v=station-preview-v1",
-            &catalogError);
-        catalogJson.has_value()) {
-        const ModelIqSnapshot catalog = ParseModelIqJson(*catalogJson, &catalogError);
-        for (const ModelIqScore& score : catalog.scores) {
-            const std::wstring key = ModelIqDedupKey(score);
-            if (key.empty() || uniqueScores.find(key) != uniqueScores.end()) {
-                continue;
-            }
-            uniqueScores.emplace(key, score);
-        }
-    } else if (firstError.empty()) {
-        firstError = catalogError;
-    }
-
-    snapshot.scores.reserve(uniqueScores.size());
-    for (auto& entry : uniqueScores) {
-        snapshot.scores.push_back(std::move(entry.second));
-    }
-    std::sort(snapshot.scores.begin(), snapshot.scores.end(),
-        [](const ModelIqScore& lhs, const ModelIqScore& rhs) {
-            if (lhs.score != rhs.score) {
-                return lhs.score > rhs.score;
-            }
-            return lhs.label < rhs.label;
-        });
-    if (snapshot.scores.empty()) {
-        snapshot.errorMessage = firstError.empty() ? L"CodexRadar points has no scores" : firstError;
-        return snapshot;
-    }
-
-    snapshot.success = true;
+    snapshot = ParseModelIqJson(WithoutJsonHistory(*catalogJson), &errorMessage);
     snapshot.kind = kind;
+    if (!snapshot.success) {
+        snapshot.errorMessage = errorMessage;
+    }
     return snapshot;
 }
+
 
 std::string AccountIdentity(const CodexUsageFetcher::AuthCredentials& credentials) {
     if (!credentials.accountId.empty()) {
