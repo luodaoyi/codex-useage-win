@@ -38,7 +38,7 @@
 
 - 原生 `Win32 + Direct2D + DirectWrite + WinHTTP`
 - 无 `C#`、无 `WebView`
-- 运行时只读取可执行文件同目录的 `accounts\*.json`（一账号一文件）。右键「账号 → 导入…」选择凭证文件后，程序把该文件复制进 `accounts\`，不修改原文件。右键切换已导入账号。当前选择记在 `%AppData%\CodexUsageBar\settings.ini` 的 `active_auth`
+- 运行时只读取可执行文件同目录的 `accounts\*.json`（一账号一文件）。右键「账号 → 导入…」选择凭证文件后，程序把该文件复制进 `accounts\`，不修改原文件。右键切换已导入账号。当前选择记在可执行文件同目录 `settings.ini` 的 `active_auth`
 - 同时接受 Codex 原生（`tokens.access_token`）和 CPA 导出的扁平文件（顶层 `access_token` / `id_token` / `refresh_token`，`type` 为 `codex`）
 - 请求 `GET https://chatgpt.com/backend-api/wham/usage`
 - 支持通过环境变量配置请求级 HTTP(S) 代理（不改系统全局代理）
@@ -47,10 +47,9 @@
   - 简单模式：只显示 `5小时剩余`、`本周剩余` 和状态标签，适合更紧凑的小卡片
   - 任务栏模式：更小的剩余额度小条，自动贴近当前显示器的任务栏边缘，并固定贴边显示
 - 智能评分排名（默认关闭）：
-  - 软件工程能力：`https://codexradar.com/api/intelligence-efficiency-metrics?refresh=1`，只采用 `benchmark_id` 为 `deep-swe` 的结果；底部「数据来自 Codex 雷达」点击打开 `https://codexradar.com/`
-  - 视觉空间能力：`https://api.codexradar.com/api/v1/intelligence-efficiency?benchmark=pompeii-adjacency`
+  - 雷达分：先读 `https://codexradar.com/data/radar-bench-binding.json`，再按其中的 `model_efforts` 请求 `https://codexradar.com/api/radar-bench-score?model=…&effort=…&view=summary&selection=user-selected-v1`（请求头 `X-Radar-Bench-Selection: user-selected-v1`）。GPT 档位用这份满分 150 的成绩。Grok、GLM 及其他模型来自 `https://codexradar.com/data/intelligence-efficiency.json?v=station-preview-v1` 的 `points[].iq`；同一模型加档位已有雷达分时保留雷达分。无分数的档位不进表。费用和耗时取有样本的均值。拉取失败后 30 秒再试，成功后每 5 分钟刷新。底部「数据来自 Codex 雷达」点击打开 `https://codexradar.com/`
   - 按分数倒序，显示分数、时间和金额
-  - 面板上按 JSON 动态生成模型组按钮，可多选过滤
+  - 面板上按模型动态生成过滤按钮，可多选
   - 每页 10 条，支持上一页 / 下一页
 - 桌面浮层挂件，可拖动、可缩放
 - 根据当前进度状态切换颜色
@@ -83,15 +82,15 @@
   - `始终置顶`
   - `固定位置`
   - `显示模式`
-  - `智能评分排名`：`关闭` / `软件工程能力` / `视觉空间能力`
+  - `智能评分排名`：`关闭` / `雷达分`
   - `语言`
   - `重置组件位置`
   - `退出`
-- 评分面板：点击 `全部` / `GPT` / `Grok` 等按钮多选过滤；用 `上一页` / `下一页` 翻页
+- 评分面板：点击 `全部` 或具体模型按钮多选过滤；用 `上一页` / `下一页` 翻页
 
 位置和尺寸会保存到：
 
-- `%APPDATA%\CodexUsageBar\settings.ini`
+- 可执行文件同目录的 `settings.ini`
 
 开机自启使用当前用户注册表：
 

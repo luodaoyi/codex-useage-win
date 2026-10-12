@@ -2,6 +2,8 @@ build/
 build-vs/
 auth.json
 accounts/*.json
+settings.ini
+quota-estimate-history.json
 xai-*.json
 codex-*.json
 artifacts/

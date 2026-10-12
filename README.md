@@ -38,7 +38,7 @@ The widget reads usage limits from the current Codex account and displays them i
 
 - Native `Win32 + Direct2D + DirectWrite + WinHTTP`
 - No `C#`, no `WebView`
-- Runtime reads only `accounts\*.json` next to the executable (one file per account). Account → Import… copies the chosen auth file into `accounts\` and does not modify the source. Switch imported accounts from that menu. The choice is `active_auth` in `%AppData%\CodexUsageBar\settings.ini`
+- Runtime reads only `accounts\*.json` next to the executable (one file per account). Account → Import… copies the chosen auth file into `accounts\` and does not modify the source. Switch imported accounts from that menu. The choice is `active_auth` in `settings.ini` next to the executable
 - Accepts both native Codex auth (`tokens.access_token`) and a flat CPA export (`access_token` / `id_token` / `refresh_token` at the root, `type` = `codex`)
 - Requests `GET https://chatgpt.com/backend-api/wham/usage`
 - Optional request-level HTTP(S) proxy via env vars (does not change the system proxy)
@@ -47,10 +47,9 @@ The widget reads usage limits from the current Codex account and displays them i
   - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
   - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
 - Smart ranking (off by default):
-  - Software engineering: `https://codexradar.com/api/intelligence-efficiency-metrics?refresh=1`, accepted only when `benchmark_id` is `deep-swe`. The "Data: Codex Radar" line opens `https://codexradar.com/`
-  - Visual-spatial: `https://api.codexradar.com/api/v1/intelligence-efficiency?benchmark=pompeii-adjacency`
+  - Radar score: read `https://codexradar.com/data/radar-bench-binding.json`, then request `https://codexradar.com/api/radar-bench-score?model=…&effort=…&view=summary&selection=user-selected-v1` for each `model_efforts` entry, with header `X-Radar-Bench-Selection: user-selected-v1`. GPT cells use that 150-point score. Grok, GLM and the other families come from `points[].iq` in `https://codexradar.com/data/intelligence-efficiency.json?v=station-preview-v1`. A RadarBench cell wins when the same model and effort exist in both. Cells without a numeric score are omitted. Cost and duration are means over evidenced samples. A failed fetch retries after 30 seconds; a successful fetch refreshes every 5 minutes. The "Data: Codex Radar" line opens `https://codexradar.com/`
   - Sorted by score, with time and cost columns
-  - On-panel model-family chips generated from the current JSON, multi-select
+  - On-panel model chips generated from the current payload, multi-select
   - 10 rows per page with Prev / Next
 - Desktop overlay widget with drag and resize support
 - Dynamic coloring based on current pace
@@ -83,15 +82,15 @@ The widget reads usage limits from the current Codex account and displays them i
   - `Always on top`
   - `Lock position`
   - `Display mode`
-  - `Smart ranking`: `Off` / `Software engineering` / `Visual-spatial`
+  - `Smart ranking`: `Off` / `Radar score`
   - `Language`
   - `Reset widget position`
   - `Exit`
-- Ranking panel: click `All` / `GPT` / `Grok` chips to multi-select families; use `Prev` / `Next` to page
+- Ranking panel: click `All` or a model chip to multi-select; use `Prev` / `Next` to page
 
 Position and size are stored in:
 
-- `%APPDATA%\CodexUsageBar\settings.ini`
+- `settings.ini` next to the executable
 
 Startup registration uses the current user registry key:
 

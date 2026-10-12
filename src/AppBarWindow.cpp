@@ -830,7 +830,9 @@ void AppBarWindow::RestartModelScoresTimer() {
 
     KillTimer(hwnd_, kModelScoresTimerId);
     if (showModelScores_) {
-        SetTimer(hwnd_, kModelScoresTimerId, static_cast<UINT>(kModelScoresRefreshIntervalSeconds * 1000), nullptr);
+        const bool failed = !modelScores_.success && !modelScores_.errorMessage.empty();
+        const int seconds = failed ? 30 : kModelScoresRefreshIntervalSeconds;
+        SetTimer(hwnd_, kModelScoresTimerId, static_cast<UINT>(seconds * 1000), nullptr);
     }
 }
 
@@ -1347,16 +1349,29 @@ bool AppBarWindow::IsActiveAuth(const AccountEntry& account) const {
 }
 
 std::wstring AppBarWindow::GetSettingsPath() const {
-    PWSTR appDataPath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath))) {
-        const std::filesystem::path path = std::filesystem::path(appDataPath) / L"CodexUsageBar" / L"settings.ini";
-        CoTaskMemFree(appDataPath);
-        return path.wstring();
-    }
-
     wchar_t modulePath[MAX_PATH] = {};
     GetModuleFileNameW(instance_, modulePath, MAX_PATH);
-    return (std::filesystem::path(modulePath).parent_path() / L"settings.ini").wstring();
+    const std::filesystem::path beside = std::filesystem::path(modulePath).parent_path() / L"settings.ini";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(beside, error)) {
+        PWSTR appDataPath = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath))) {
+            const std::filesystem::path legacyDir = std::filesystem::path(appDataPath) / L"CodexUsageBar";
+            CoTaskMemFree(appDataPath);
+            const std::filesystem::path legacy = legacyDir / L"settings.ini";
+            if (std::filesystem::is_regular_file(legacy, error)) {
+                std::filesystem::copy_file(legacy, beside, std::filesystem::copy_options::skip_existing, error);
+            }
+            const std::filesystem::path legacyHistory = legacyDir / L"quota-estimate-history.json";
+            const std::filesystem::path besideHistory = beside.parent_path() / L"quota-estimate-history.json";
+            if (std::filesystem::is_regular_file(legacyHistory, error)
+                && !std::filesystem::exists(besideHistory, error)) {
+                std::filesystem::copy_file(
+                    legacyHistory, besideHistory, std::filesystem::copy_options::skip_existing, error);
+            }
+        }
+    }
+    return beside.wstring();
 }
 
 std::wstring AppBarWindow::GetExecutablePath() const {
@@ -2386,8 +2401,34 @@ void AppBarWindow::OnModelScoresUpdated(ModelIqSnapshot* snapshot) {
     modelScoresInFlight_ = false;
     if (snapshot != nullptr && showModelScores_ && snapshot->kind == modelScoreKind_) {
         modelScores_ = *snapshot;
+        if (!selectedModelFamilyKeys_.empty()) {
+            const std::vector<std::pair<std::wstring, std::wstring>> families = ListModelScoreFamilies();
+            std::vector<std::wstring> kept;
+            for (const std::wstring& key : selectedModelFamilyKeys_) {
+                for (const auto& family : families) {
+                    if (family.first == key) {
+                        kept.push_back(key);
+                        break;
+                    }
+                }
+            }
+            if (kept.size() != selectedModelFamilyKeys_.size()) {
+                selectedModelFamilyKeys_ = std::move(kept);
+                std::wstring familyList;
+                for (const std::wstring& key : selectedModelFamilyKeys_) {
+                    if (!familyList.empty()) {
+                        familyList += L',';
+                    }
+                    familyList += key;
+                }
+                const std::wstring settingsPath = GetSettingsPath();
+                WritePrivateProfileStringW(
+                    L"layout", L"model_score_families", familyList.c_str(), settingsPath.c_str());
+            }
+        }
         ClampModelScoresPage();
     }
+    RestartModelScoresTimer();
     if (!taskbarMode_ && showModelScores_) {
         FitWindowToContent();
     }
@@ -2873,9 +2914,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         vline(timeLeft);
         vline(costLeft);
 
-        const std::wstring title = modelScoreKind_ == RadarMetricKind::VisualSpatial
-            ? LocalizeText(L"Visual-spatial", L"视觉空间评分")
-            : LocalizeText(L"Software engineering", L"软件工程评分");
+        const std::wstring title = LocalizeText(L"Radar score", L"雷达分");
         RECT headerName = MakeRect(tableLeft + cellPad, tableTop, effortLeft - cellPad, tableTop + rowH);
         RECT headerEffort = MakeRect(effortLeft, tableTop, scoreLeft, tableTop + rowH);
         RECT headerScore = MakeRect(scoreLeft, tableTop, timeLeft - cellPad, tableTop + rowH);
@@ -4084,10 +4123,8 @@ HMENU AppBarWindow::CreateContextMenuHandle() {
         kCommandTaskbarMode, LocalizeText(L"Taskbar mode", L"任务栏模式"));
     AppendMenuW(rankingMenu, MF_STRING | (!showModelScores_ ? MF_CHECKED : MF_UNCHECKED),
         kCommandModelScoresOff, LocalizeText(L"Off", L"关闭"));
-    AppendMenuW(rankingMenu, MF_STRING | (showModelScores_ && modelScoreKind_ == RadarMetricKind::SoftwareEngineering ? MF_CHECKED : MF_UNCHECKED),
-        kCommandModelScoresSoftware, LocalizeText(L"Software engineering", L"软件工程能力"));
-    AppendMenuW(rankingMenu, MF_STRING | (showModelScores_ && modelScoreKind_ == RadarMetricKind::VisualSpatial ? MF_CHECKED : MF_UNCHECKED),
-        kCommandModelScoresVisual, LocalizeText(L"Visual-spatial", L"视觉空间能力"));
+    AppendMenuW(rankingMenu, MF_STRING | (showModelScores_ ? MF_CHECKED : MF_UNCHECKED),
+        kCommandModelScoresSoftware, LocalizeText(L"Radar score", L"雷达分"));
 
     const bool canResetCredit = snapshot_.success
         && snapshot_.resetCredits.fetched
