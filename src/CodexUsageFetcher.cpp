@@ -1414,6 +1414,103 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     snapshot.kind = kind;
     if (!snapshot.success) {
         snapshot.errorMessage = errorMessage;
+        return snapshot;
+    }
+
+    // gpt-6.1-sol is on RadarBench and is absent from the station JSON.
+    // Only those missing models are fetched, so the catalog stay one request.
+    std::wstring bindingError;
+    const std::optional<std::string> bindingJson = HttpGetCodexRadarMetricsJson(
+        L"codexradar.com",
+        L"/data/radar-bench-binding.json",
+        &bindingError);
+    std::string benchmark;
+    const std::optional<std::vector<RadarBenchSelection>> selections = bindingJson.has_value()
+        ? ParseRadarBenchBinding(*bindingJson, &benchmark, &bindingError)
+        : std::nullopt;
+    std::vector<RadarBenchSelection> missing;
+    if (selections.has_value()) {
+        for (const RadarBenchSelection& selection : *selections) {
+            const std::wstring model = Utf8ToWide(selection.model);
+            const bool present = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
+                [&](const ModelIqScore& score) { return score.model == model; });
+            if (!present) {
+                missing.push_back(selection);
+            }
+        }
+    }
+    if (!missing.empty()) {
+        std::vector<std::optional<std::string>> bodies(missing.size());
+        std::atomic<size_t> cursor{0};
+        const size_t workerCount = std::min<size_t>(3, missing.size());
+        std::vector<std::thread> workers;
+        workers.reserve(workerCount);
+        for (size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+            workers.emplace_back([&]() {
+                for (;;) {
+                    const size_t index = cursor.fetch_add(1);
+                    if (index >= missing.size()) {
+                        return;
+                    }
+                    const RadarBenchSelection& selection = missing[index];
+                    const std::wstring path = Utf8ToWide(
+                        "/api/radar-bench-score?model=" + UrlQueryEncode(selection.model)
+                        + "&effort=" + UrlQueryEncode(selection.effort)
+                        + "&view=summary&selection=user-selected-v1");
+                    std::wstring cellError;
+                    bodies[index] = HttpExchange(
+                        L"CodexUsageBar/0.1",
+                        L"codexradar.com",
+                        path,
+                        L"GET",
+                        {
+                            L"Accept: application/json",
+                            L"Cache-Control: no-cache",
+                            L"User-Agent: CodexUsageBar",
+                            L"X-Radar-Bench-Selection: user-selected-v1",
+                        },
+                        nullptr,
+                        &cellError,
+                        nullptr);
+                }
+            });
+        }
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+        for (size_t index = 0; index < bodies.size(); ++index) {
+            if (!bodies[index].has_value()) {
+                continue;
+            }
+            jsonlite::Parser parser(*bodies[index]);
+            const std::optional<jsonlite::Value> root = parser.Parse();
+            if (!root.has_value()) {
+                continue;
+            }
+            ModelIqScore score;
+            std::wstring parseError;
+            if (!FillModelIqScoreFromRadarSummary(*root, benchmark, &score, &parseError)) {
+                continue;
+            }
+            const RadarBenchSelection& selection = missing[index];
+            if (score.model != Utf8ToWide(selection.model) || score.effort != Utf8ToWide(selection.effort)) {
+                continue;
+            }
+            const std::wstring key = ModelIqDedupKey(score);
+            const bool duplicate = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
+                [&](const ModelIqScore& existing) { return ModelIqDedupKey(existing) == key; });
+            if (key.empty() || duplicate) {
+                continue;
+            }
+            snapshot.scores.push_back(std::move(score));
+        }
+        std::sort(snapshot.scores.begin(), snapshot.scores.end(),
+            [](const ModelIqScore& lhs, const ModelIqScore& rhs) {
+                if (lhs.score != rhs.score) {
+                    return lhs.score > rhs.score;
+                }
+                return lhs.label < rhs.label;
+            });
     }
     return snapshot;
 }

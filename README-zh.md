@@ -47,7 +47,7 @@
   - 简单模式：只显示 `5小时剩余`、`本周剩余` 和状态标签，适合更紧凑的小卡片
   - 任务栏模式：更小的剩余额度小条，自动贴近当前显示器的任务栏边缘，并固定贴边显示
 - 智能评分排名（默认关闭）：
-  - 雷达分：一次请求 `https://codexradar.com/data/intelligence-efficiency.json?v=station-preview-v1`，使用其中 `points[].iq`。这份文件包含 GPT、Grok、GLM 及其他模型。读到 `history` 就停止下载，不再收下后面约 9 MB 的历史。无分数的档位不进表。拉取失败后 30 秒再试，成功后每 5 分钟刷新。底部「数据来自 Codex 雷达」点击打开 `https://codexradar.com/`
+  - 雷达分：一次请求 `https://codexradar.com/data/intelligence-efficiency.json?v=station-preview-v1`，使用其中 `points[].iq`。读到 `history` 就停止下载。这份快照没有 `gpt-6.1-sol`。绑定里缺的模型再按档位请求 `https://codexradar.com/api/radar-bench-score`。无分数的档位不进表。拉取失败后 30 秒再试，成功后每 5 分钟刷新。底部「数据来自 Codex 雷达」点击打开 `https://codexradar.com/`
   - 按分数倒序，显示分数、时间和金额
   - 面板上按模型动态生成过滤按钮，可多选
   - 每页 10 条，支持上一页 / 下一页
