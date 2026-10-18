@@ -214,6 +214,13 @@ private:
     void ClampModelScoresPage();
     bool IsModelScoreFamilySelected(const std::wstring& familyKey) const;
     bool MatchesModelScoreFamily(const ModelIqScore& score) const;
+    bool MatchesModelScoreFilters(const ModelIqScore& score) const;
+    int ModelScoreQueryRowHeight() const;
+    void EnsureModelScoreQueryEdit();
+    void PlaceModelScoreQueryEdit(const RECT& rect);
+    void HideModelScoreQueryEdit();
+    void UpdateModelScoreQueryChrome();
+    void ApplyModelScoreQueryText();
     std::vector<std::pair<std::wstring, std::wstring>> ListModelScoreFamilies() const;
     int CountFilteredModelScores() const;
     int GetModelScoresPageCount() const;
@@ -284,6 +291,13 @@ private:
     RadarMetricKind modelScoreKind_ = RadarMetricKind::SoftwareEngineering;
     std::vector<std::wstring> selectedModelFamilyKeys_;
     std::vector<ModelScoreFilterChip> modelScoreFilterChips_;
+    HWND modelScoreQueryEdit_ = nullptr;
+    HFONT modelScoreQueryFont_ = nullptr;
+    HBRUSH modelScoreQueryBrush_ = nullptr;
+    std::wstring modelScoreQuery_;
+    bool modelScoreQueryPlaced_ = false;
+    bool modelScoreQueryBrushLight_ = false;
+    int modelScoreQueryFontDpi_ = 0;
     int modelScoresPage_ = 0;
     bool hasReleaseCheckResult_ = false;
     bool updateAvailable_ = false;

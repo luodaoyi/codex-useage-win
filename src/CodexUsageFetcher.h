@@ -92,6 +92,9 @@ struct ModelIqScore {
     bool hasDuration = false;
     int passed = 0;
     int tasks = 0;
+    // Grade time. updatedAtDay means a UTC day bucket, not a clock time.
+    std::wstring updatedAt;
+    bool updatedAtDay = false;
 };
 
 struct ModelIqSnapshot {

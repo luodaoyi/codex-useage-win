@@ -7,6 +7,7 @@
 #include "QuotaEstimate.h"
 #include "ResetStatus.h"
 #include "SessionIndex.h"
+#include "TextUtil.h"
 
 #include <Windows.h>
 
@@ -241,6 +242,38 @@ void TestProxyAndUpdate() {
     std::filesystem::remove(file);
 }
 
+void TestModelNameQuery() {
+    Expect(ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L""), "empty query keeps every model");
+    Expect(ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L"   "), "blank query keeps every model");
+    Expect(ModelNameMatchesQuery(L"gpt-6-luna", L"GPT-6 Luna xhigh", L"xhigh", L"luna"), "luna matches luna id");
+    Expect(ModelNameMatchesQuery(L"gpt-5.6-luna", L"GPT-5.6 Luna max", L"max", L"Luna"), "luna match ignores case");
+    Expect(!ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L"luna"), "luna skips sol");
+    Expect(ModelNameMatchesQuery(L"deepseek-v4-flash", L"Deepseek V4 Flash high", L"high", L"flash"), "flash matches deepseek");
+    Expect(ModelNameMatchesQuery(L"glm-5.3-flash", L"GLM-5.3 Flash max", L"max", L"flash"), "flash matches glm");
+    Expect(ModelNameMatchesQuery(L"gpt-6-luna", L"GPT-6 Luna xhigh", L"xhigh", L"flash luna"), "space means or, luna side");
+    Expect(ModelNameMatchesQuery(L"glm-5.3-flash", L"GLM-5.3 Flash max", L"max", L"flash luna"), "space means or, flash side");
+    Expect(!ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L"flash luna"), "space or still excludes sol");
+    Expect(!ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L"ultra"), "effort word is not the model name");
+    Expect(FormatScoreUpdatedAt(L"2026-09-29T15:28:15+08:00", false) == L"09-29 15:28", "precise grade time keeps clock");
+    Expect(FormatScoreUpdatedAt(L"2026-10-18T00:00:00Z", true) == L"10-18", "day bucket hides midnight");
+    Expect(FormatScoreUpdatedAt(L"", false) == L"--", "missing update time");
+    Expect(FormatScoreUpdatedAt(L"bad", false) == L"--", "bad update time");
+    bool uniqueDark = true;
+    bool uniqueLight = true;
+    for (int i = 0; i < 40 && (uniqueDark || uniqueLight); ++i) {
+        for (int j = i + 1; j < 40; ++j) {
+            if (SeriesModelColor(i, false) == SeriesModelColor(j, false)) {
+                uniqueDark = false;
+            }
+            if (SeriesModelColor(i, true) == SeriesModelColor(j, true)) {
+                uniqueLight = false;
+            }
+        }
+    }
+    Expect(uniqueDark && uniqueLight, "40 model colors stay unique");
+    Expect(SeriesModelColor(0, false) != SeriesModelColor(12, false), "index 12 does not reuse index 0");
+}
+
 void TestPkce() {
     const PkceMaterial material = MakePkceMaterial();
     Expect(material.verifier.size() >= 32 && material.challenge.size() == 43, "pkce sizes");
@@ -263,6 +296,7 @@ int main() {
     TestGrok();
     TestProxyAndUpdate();
     TestPkce();
+    TestModelNameQuery();
     std::cout << "failures=" << gFailures << "\n";
     return gFailures == 0 ? 0 : 1;
 }

@@ -4,6 +4,7 @@
 #include "BrowserSignIn.h"
 #include "TextUtil.h"
 
+#include <commctrl.h>
 #include <commdlg.h>
 #include <ShlObj.h>
 #include <shellapi.h>
@@ -24,6 +25,8 @@
 #include <vector>
 
 namespace {
+
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 constexpr wchar_t kWindowClassName[] = L"CodexUsageBarWindow";
 constexpr const wchar_t* kCurrentVersion = APP_VERSION_W;
@@ -87,6 +90,7 @@ constexpr UINT kCommandLanguageJapanese = 62;
 constexpr UINT kCommandLanguageRussian = 63;
 constexpr UINT kCommandLanguageFrench = 64;
 constexpr UINT kCommandCloseMenu = 70;
+constexpr UINT kModelScoreQueryEditId = 90;
 constexpr UINT kUiSettings = 80;
 constexpr UINT kUiAccounts = 81;
 constexpr UINT kUiCloseSheet = 82;
@@ -321,6 +325,14 @@ PaceInfo BuildPaceInfo(const UsageSnapshot& snapshot) {
 AppBarWindow::AppBarWindow(HINSTANCE instance) : instance_(instance) {}
 
 AppBarWindow::~AppBarWindow() {
+    if (modelScoreQueryFont_ != nullptr) {
+        DeleteObject(modelScoreQueryFont_);
+        modelScoreQueryFont_ = nullptr;
+    }
+    if (modelScoreQueryBrush_ != nullptr) {
+        DeleteObject(modelScoreQueryBrush_);
+        modelScoreQueryBrush_ = nullptr;
+    }
     DiscardTextFormats();
     DiscardDeviceResources();
 }
@@ -340,7 +352,7 @@ bool AppBarWindow::Create() {
         WS_EX_TOOLWINDOW,
         kWindowClassName,
         LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"),
-        WS_POPUP | WS_VISIBLE,
+        WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
         0,
         0,
         100,
@@ -440,6 +452,25 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_ERASEBKGND:
             return 1;
+
+        case WM_COMMAND:
+            if (HIWORD(wParam) == EN_CHANGE
+                && reinterpret_cast<HWND>(lParam) == modelScoreQueryEdit_) {
+                ApplyModelScoreQueryText();
+                return 0;
+            }
+            break;
+
+        case WM_CTLCOLOREDIT:
+            if (reinterpret_cast<HWND>(lParam) == modelScoreQueryEdit_) {
+                UpdateModelScoreQueryChrome();
+                const COLORREF ink = lightTheme_ ? RGB(21, 27, 24) : RGB(240, 244, 241);
+                const COLORREF paper = lightTheme_ ? RGB(255, 255, 255) : RGB(28, 34, 31);
+                SetTextColor(reinterpret_cast<HDC>(wParam), ink);
+                SetBkColor(reinterpret_cast<HDC>(wParam), paper);
+                return reinterpret_cast<LRESULT>(modelScoreQueryBrush_);
+            }
+            break;
 
         case WM_PAINT: {
             PAINTSTRUCT ps;
@@ -626,6 +657,14 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
         }
 
         case WM_DESTROY:
+            if (modelScoreQueryFont_ != nullptr) {
+                DeleteObject(modelScoreQueryFont_);
+                modelScoreQueryFont_ = nullptr;
+            }
+            if (modelScoreQueryBrush_ != nullptr) {
+                DeleteObject(modelScoreQueryBrush_);
+                modelScoreQueryBrush_ = nullptr;
+            }
             KillTimer(hwnd_, kCountdownTimerId);
             KillTimer(hwnd_, kRefreshTimerId);
             KillTimer(hwnd_, kResetConfirmTimerId);
@@ -794,6 +833,10 @@ void AppBarWindow::SetLanguage(Language language) {
     SaveFeatureSettings();
     if (hwnd_ != nullptr) {
         SetWindowTextW(hwnd_, LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"));
+        if (modelScoreQueryEdit_ != nullptr) {
+            SendMessageW(modelScoreQueryEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(
+                LocalizeText(L"Filter names, e.g. flash or luna", L"过滤模型名，如 flash 或 luna")));
+        }
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
     SaveSettings();
@@ -900,7 +943,8 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
     const int midGap = ScaleForDpi(hwnd_, 4);
     const int pagerH = ScaleForDpi(hwnd_, 18);
     const int footH = ScaleForDpi(hwnd_, 14);
-    return gap + pad + filterH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
+    const int queryH = ModelScoreQueryRowHeight();
+    return gap + pad + queryH + midGap + filterH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
 }
 
 bool AppBarWindow::IsModelScoreFamilySelected(const std::wstring& familyKey) const {
@@ -917,6 +961,121 @@ bool AppBarWindow::MatchesModelScoreFamily(const ModelIqScore& score) const {
     }
     return std::find(selectedModelFamilyKeys_.begin(), selectedModelFamilyKeys_.end(), score.familyKey)
         != selectedModelFamilyKeys_.end();
+}
+
+bool AppBarWindow::MatchesModelScoreFilters(const ModelIqScore& score) const {
+    return MatchesModelScoreFamily(score)
+        && ModelNameMatchesQuery(score.model, score.label, score.effort, modelScoreQuery_);
+}
+
+int AppBarWindow::ModelScoreQueryRowHeight() const {
+    return ScaleForDpi(hwnd_, 22);
+}
+
+void AppBarWindow::EnsureModelScoreQueryEdit() {
+    if (modelScoreQueryEdit_ != nullptr || hwnd_ == nullptr) {
+        return;
+    }
+    modelScoreQueryEdit_ = CreateWindowExW(
+        0,
+        L"EDIT",
+        L"",
+        WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_LEFT,
+        0,
+        0,
+        0,
+        0,
+        hwnd_,
+        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kModelScoreQueryEditId)),
+        instance_,
+        nullptr);
+    if (modelScoreQueryEdit_ == nullptr) {
+        return;
+    }
+    SendMessageW(modelScoreQueryEdit_, EM_SETLIMITTEXT, 64, 0);
+    SendMessageW(modelScoreQueryEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(
+        LocalizeText(L"Filter names, e.g. flash or luna", L"过滤模型名，如 flash 或 luna")));
+    UpdateModelScoreQueryChrome();
+}
+
+void AppBarWindow::UpdateModelScoreQueryChrome() {
+    if (modelScoreQueryEdit_ == nullptr || hwnd_ == nullptr) {
+        return;
+    }
+    const int dpi = static_cast<int>(GetDpiForWindow(hwnd_));
+    if (modelScoreQueryFont_ == nullptr || modelScoreQueryFontDpi_ != dpi) {
+        if (modelScoreQueryFont_ != nullptr) {
+            DeleteObject(modelScoreQueryFont_);
+        }
+        modelScoreQueryFont_ = CreateFontW(
+            -ScaleForDpi(hwnd_, 13),
+            0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        modelScoreQueryFontDpi_ = dpi;
+        SendMessageW(modelScoreQueryEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(modelScoreQueryFont_), FALSE);
+    }
+    if (modelScoreQueryBrush_ == nullptr || modelScoreQueryBrushLight_ != lightTheme_) {
+        if (modelScoreQueryBrush_ != nullptr) {
+            DeleteObject(modelScoreQueryBrush_);
+        }
+        const COLORREF paper = lightTheme_ ? RGB(255, 255, 255) : RGB(28, 34, 31);
+        modelScoreQueryBrush_ = CreateSolidBrush(paper);
+        modelScoreQueryBrushLight_ = lightTheme_;
+    }
+}
+
+void AppBarWindow::PlaceModelScoreQueryEdit(const RECT& rect) {
+    EnsureModelScoreQueryEdit();
+    if (modelScoreQueryEdit_ == nullptr) {
+        return;
+    }
+    UpdateModelScoreQueryChrome();
+    modelScoreQueryPlaced_ = true;
+    RECT current = {};
+    GetWindowRect(modelScoreQueryEdit_, &current);
+    MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&current), 2);
+    if (IsWindowVisible(modelScoreQueryEdit_)
+        && current.left == rect.left && current.top == rect.top
+        && current.right == rect.right && current.bottom == rect.bottom) {
+        return;
+    }
+    SetWindowPos(
+        modelScoreQueryEdit_,
+        nullptr,
+        rect.left,
+        rect.top,
+        std::max(1, static_cast<int>(rect.right - rect.left)),
+        std::max(1, static_cast<int>(rect.bottom - rect.top)),
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+}
+
+void AppBarWindow::HideModelScoreQueryEdit() {
+    modelScoreQueryPlaced_ = false;
+    if (modelScoreQueryEdit_ != nullptr && IsWindowVisible(modelScoreQueryEdit_)) {
+        ShowWindow(modelScoreQueryEdit_, SW_HIDE);
+    }
+}
+
+void AppBarWindow::ApplyModelScoreQueryText() {
+    if (modelScoreQueryEdit_ == nullptr) {
+        return;
+    }
+    wchar_t buffer[80] = {};
+    GetWindowTextW(modelScoreQueryEdit_, buffer, 80);
+    const std::wstring next(buffer);
+    if (next == modelScoreQuery_) {
+        return;
+    }
+    const int rowsBefore = GetModelScoresVisibleRowCount();
+    const int pagesBefore = GetModelScoresPageCount();
+    modelScoreQuery_ = next;
+    modelScoresPage_ = 0;
+    if (!taskbarMode_ && showModelScores_
+        && (GetModelScoresVisibleRowCount() != rowsBefore || GetModelScoresPageCount() != pagesBefore)) {
+        FitWindowToContent();
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 std::vector<std::pair<std::wstring, std::wstring>> AppBarWindow::ListModelScoreFamilies() const {
@@ -950,12 +1109,12 @@ int AppBarWindow::CountFilteredModelScores() const {
     if (!modelScores_.success) {
         return 0;
     }
-    if (selectedModelFamilyKeys_.empty()) {
+    if (selectedModelFamilyKeys_.empty() && modelScoreQuery_.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
         return static_cast<int>(modelScores_.scores.size());
     }
     int count = 0;
     for (const ModelIqScore& score : modelScores_.scores) {
-        if (MatchesModelScoreFamily(score)) {
+        if (MatchesModelScoreFilters(score)) {
             ++count;
         }
     }
@@ -2493,6 +2652,11 @@ void AppBarWindow::Paint(HDC hdc) {
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();
     }
+    if (!modelScoreQueryPlaced_) {
+        HideModelScoreQueryEdit();
+    } else if (modelScoreQueryEdit_ != nullptr) {
+        RedrawWindow(modelScoreQueryEdit_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    }
 }
 
 void AppBarWindow::DrawAccountDropdown() {
@@ -2553,6 +2717,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     refreshButtonRect_ = {};
     uiHits_.clear();
     modelScoresPrevRect_ = {};
+    modelScoreQueryPlaced_ = false;
     modelScoresNextRect_ = {};
     modelScoresSourceRect_ = {};
     modelScoreFilterChips_.clear();
@@ -2731,6 +2896,11 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int costColW = std::max(
             ScaleForDpi(hwnd_, 68),
             static_cast<int>(std::ceil(measureTextWidth(mono, L"$000.00"))) + cellPad * 2);
+        const int updatedColW = std::max(
+            ScaleForDpi(hwnd_, 92),
+            static_cast<int>(std::ceil(std::max(
+                measureTextWidth(mono, L"00-00 00:00"),
+                measureTextWidth(mono, LocalizeText(L"Updated", L"更新"))))) + cellPad * 2);
         const float effortSampleW = std::max(
             measureTextWidth(monoBold, L"MEDIUM"),
             measureTextWidth(monoBold, L"XHIGH"));
@@ -2741,8 +2911,9 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int filterInnerLeft = left + innerPad;
         const int filterInnerRight = right - innerPad;
         const int filterH = GetModelScoreFilterBandHeight(std::max(1, filterInnerRight - filterInnerLeft));
+        const int queryH = ModelScoreQueryRowHeight();
         const int tableH = rowH * (rows + 1);
-        const int boxH = pad + filterH + midGap + tableH + midGap + pagerH + footH + pad;
+        const int boxH = pad + queryH + midGap + filterH + midGap + tableH + midGap + pagerH + footH + pad;
         RECT box = MakeRect(left, top + gap, right, top + gap + boxH);
         const COLORREF cardBg = lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36);
         const COLORREF headerBg = lightTheme_ ? RGB(236, 240, 237) : RGB(44, 52, 47);
@@ -2767,7 +2938,9 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 D2D1::RoundedRect(ToRectF(rect), radius, radius), solidBrush_.Get(), 1.0f);
         };
 
-        const int filterTop = box.top + pad;
+        const int queryTop = box.top + pad;
+        PlaceModelScoreQueryEdit(MakeRect(filterInnerLeft, queryTop, filterInnerRight, queryTop + queryH));
+        const int filterTop = queryTop + queryH + midGap;
         modelScoreFilterChips_ = BuildModelScoreFilterChips(
             box.left + innerPad, filterTop, box.right - innerPad);
         const COLORREF chipSelectedBg = lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46);
@@ -2786,46 +2959,29 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int tableRight = box.right - 1;
         const int tableTop = filterTop + filterH + midGap;
         const int tableBottom = tableTop + tableH;
-        const int costLeft = tableRight - costColW;
+        const int updatedLeft = tableRight - updatedColW;
+        const int costLeft = updatedLeft - costColW;
         const int timeLeft = costLeft - timeColW;
         const int scoreLeft = timeLeft - scoreColW;
         const int effortLeft = scoreLeft - effortColW;
 
-        struct SeriesInk { COLORREF light; COLORREF dark; };
-        static const SeriesInk seriesPalette[] = {
-            { RGB(14, 116, 144), RGB(110, 214, 230) },
-            { RGB(29, 78, 216), RGB(156, 184, 255) },
-            { RGB(109, 40, 217), RGB(204, 168, 255) },
-            { RGB(190, 24, 93), RGB(255, 160, 196) },
-            { RGB(180, 83, 9), RGB(255, 196, 110) },
-            { RGB(21, 128, 61), RGB(120, 214, 156) },
-            { RGB(15, 118, 110), RGB(110, 220, 200) },
-            { RGB(185, 28, 28), RGB(255, 160, 150) },
-            { RGB(79, 70, 229), RGB(176, 176, 255) },
-            { RGB(146, 64, 14), RGB(255, 176, 120) },
-            { RGB(3, 105, 161), RGB(130, 200, 245) },
-            { RGB(112, 48, 160), RGB(220, 160, 245) },
-        };
         std::vector<std::wstring> seriesOrder;
         auto seriesKeyOf = [](const ModelIqScore& score) {
             return score.model.empty() ? score.label : score.model;
         };
-        auto seriesIndexOf = [&](const std::wstring& key) {
-            for (int index = 0; index < static_cast<int>(seriesOrder.size()); ++index) {
-                if (seriesOrder[static_cast<size_t>(index)] == key) {
-                    return index;
-                }
-            }
-            seriesOrder.push_back(key);
-            return static_cast<int>(seriesOrder.size()) - 1;
-        };
         for (const ModelIqScore& score : modelScores_.scores) {
-            seriesIndexOf(seriesKeyOf(score));
+            const std::wstring key = seriesKeyOf(score);
+            if (std::find(seriesOrder.begin(), seriesOrder.end(), key) == seriesOrder.end()) {
+                seriesOrder.push_back(key);
+            }
         }
+        std::sort(seriesOrder.begin(), seriesOrder.end());
         auto seriesColorOf = [&](const std::wstring& key) {
-            const int index = seriesIndexOf(key);
-            const SeriesInk& ink = seriesPalette[static_cast<size_t>(index) % (sizeof(seriesPalette) / sizeof(seriesPalette[0]))];
-            return lightTheme_ ? ink.light : ink.dark;
+            const auto found = std::find(seriesOrder.begin(), seriesOrder.end(), key);
+            const int index = found == seriesOrder.end()
+                ? 0
+                : static_cast<int>(found - seriesOrder.begin());
+            return SeriesModelColor(index, lightTheme_);
         };
         auto modelTitleOf = [](const ModelIqScore& score) {
             if (!score.effort.empty()) {
@@ -2913,13 +3069,15 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         vline(scoreLeft);
         vline(timeLeft);
         vline(costLeft);
+        vline(updatedLeft);
 
         const std::wstring title = LocalizeText(L"Radar score", L"雷达分");
         RECT headerName = MakeRect(tableLeft + cellPad, tableTop, effortLeft - cellPad, tableTop + rowH);
         RECT headerEffort = MakeRect(effortLeft, tableTop, scoreLeft, tableTop + rowH);
         RECT headerScore = MakeRect(scoreLeft, tableTop, timeLeft - cellPad, tableTop + rowH);
         RECT headerTime = MakeRect(timeLeft, tableTop, costLeft - cellPad, tableTop + rowH);
-        RECT headerCost = MakeRect(costLeft, tableTop, tableRight - cellPad, tableTop + rowH);
+        RECT headerCost = MakeRect(costLeft, tableTop, updatedLeft - cellPad, tableTop + rowH);
+        RECT headerUpdated = MakeRect(updatedLeft, tableTop, tableRight - cellPad, tableTop + rowH);
         drawTextBlock(mono, title, headerName, textSecondary,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         drawTextBlock(mono, LocalizeText(L"Depth", L"深度"), headerEffort, textSecondary,
@@ -2930,13 +3088,15 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
         drawTextBlock(mono, LocalizeText(L"Cost", L"金额"), headerCost, textSecondary,
             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+        drawTextBlock(mono, LocalizeText(L"Updated", L"更新"), headerUpdated, textSecondary,
+            DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
 
         std::vector<const ModelIqScore*> visibleScores;
         if (modelScores_.success) {
             const int start = modelScoresPage_ * kModelScoresPageSize;
             int skipped = 0;
             for (const ModelIqScore& score : modelScores_.scores) {
-                if (!MatchesModelScoreFamily(score)) {
+                if (!MatchesModelScoreFilters(score)) {
                     continue;
                 }
                 if (skipped < start) {
@@ -2961,7 +3121,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 RECT nameRect = MakeRect(tableLeft + accentW + cellPad, rowTop, effortLeft - ScaleForDpi(hwnd_, 4), rowTop + rowH);
                 RECT scoreRect = MakeRect(scoreLeft, rowTop, timeLeft - cellPad, rowTop + rowH);
                 RECT timeRect = MakeRect(timeLeft, rowTop, costLeft - cellPad, rowTop + rowH);
-                RECT costRect = MakeRect(costLeft, rowTop, tableRight - cellPad, rowTop + rowH);
+                RECT costRect = MakeRect(costLeft, rowTop, updatedLeft - cellPad, rowTop + rowH);
+                RECT updatedRect = MakeRect(updatedLeft, rowTop, tableRight - cellPad, rowTop + rowH);
                 drawTextBlock(mono, modelTitleOf(score), nameRect, seriesColor,
                     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
                 if (!score.effort.empty()) {
@@ -2991,14 +3152,19 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
                 drawTextBlock(mono, formatRadarCost(score), costRect, textPrimary,
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                drawTextBlock(mono, FormatScoreUpdatedAt(score.updatedAt, score.updatedAtDay), updatedRect, textPrimary,
+                    DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
             }
         } else {
             const int rowTop = tableTop + rowH;
             RECT row = MakeRect(tableLeft + cellPad, rowTop, tableRight - cellPad, rowTop + rowH);
+            const bool queryActive = modelScoreQuery_.find_first_not_of(L" \t\r\n") != std::wstring::npos;
             const std::wstring message = modelScoresInFlight_
                 ? std::wstring(LocalizeText(L"Loading scores...", L"正在加载评分..."))
                 : (modelScores_.success
-                    ? std::wstring(LocalizeText(L"No models in this group", L"该模型组暂无数据"))
+                    ? std::wstring(queryActive
+                        ? LocalizeText(L"No model name matches", L"没有匹配的模型名")
+                        : LocalizeText(L"No models in this group", L"该模型组暂无数据"))
                     : (modelScores_.errorMessage.empty()
                         ? std::wstring(LocalizeText(L"No score data", L"暂无评分数据"))
                         : modelScores_.errorMessage));
@@ -3012,6 +3178,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         vline(scoreLeft);
         vline(timeLeft);
         vline(costLeft);
+        vline(updatedLeft);
         drawRectBorder(box, border);
 
         const int pageCount = GetModelScoresPageCount();

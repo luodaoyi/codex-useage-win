@@ -167,6 +167,12 @@ bool FillModelIqScoreFromPoint(const jsonlite::Value& pointNode, ModelIqScore* s
             score->hasDuration = true;
         }
     }
+    if (const jsonlite::Value* gradedAt = pointNode.Find("latest_graded_at"); gradedAt != nullptr) {
+        if (auto text = gradedAt->AsString(); text.has_value() && !text->empty()) {
+            score->updatedAt = Utf8ToWide(std::string(*text));
+            score->updatedAtDay = false;
+        }
+    }
     if (score->score >= 100.0) {
         score->status = L"green";
     } else if (score->score >= 85.0) {
@@ -221,9 +227,14 @@ struct RadarBenchSelection {
     std::string effort;
 };
 
+const char* RadarComponentKey(RadarMetricKind kind) {
+    return kind == RadarMetricKind::VisualSpatial ? "pompeii" : "deepswe";
+}
+
 bool FillModelIqScoreFromRadarSummary(
     const jsonlite::Value& node,
     const std::string& expectedBenchmark,
+    RadarMetricKind kind,
     ModelIqScore* score,
     std::wstring* errorMessage) {
     if (score == nullptr) {
@@ -248,10 +259,13 @@ bool FillModelIqScoreFromRadarSummary(
         return false;
     }
 
-    const jsonlite::Value* scoreNode = node.Find("score");
+    const char* componentKey = RadarComponentKey(kind);
+    const jsonlite::Value* sources = node.Find("source_scores");
+    const jsonlite::Value* component = sources != nullptr ? sources->Find(componentKey) : nullptr;
+    const jsonlite::Value* scoreNode = component != nullptr ? component->Find("score") : nullptr;
     if (scoreNode == nullptr || scoreNode->IsNull()) {
         if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar summary has no score";
+            *errorMessage = L"CodexRadar summary has no component score";
         }
         return false;
     }
@@ -278,12 +292,12 @@ bool FillModelIqScoreFromRadarSummary(
             score->effort = Utf8ToWide(effortUtf8);
         }
     }
-    if (const jsonlite::Value* coverageNode = node.Find("coverage"); coverageNode != nullptr) {
+    if (const jsonlite::Value* coverageNode = component->Find("coverage"); coverageNode != nullptr) {
         if (auto coverage = coverageNode->AsNumber(); coverage.has_value()) {
             score->passed = static_cast<int>(*coverage);
         }
     }
-    if (const jsonlite::Value* tasksNode = node.Find("required_tasks"); tasksNode != nullptr) {
+    if (const jsonlite::Value* tasksNode = component->Find("required_tasks"); tasksNode != nullptr) {
         if (auto tasks = tasksNode->AsNumber(); tasks.has_value()) {
             score->tasks = static_cast<int>(*tasks);
         }
@@ -300,6 +314,33 @@ bool FillModelIqScoreFromRadarSummary(
                 score->hasDuration = true;
             }
         }
+    }
+    if (const jsonlite::Value* detail = node.Find("detail_metrics"); detail != nullptr) {
+        const jsonlite::Value* graded = detail->Find("latest_graded_at");
+        const auto gradedText = graded != nullptr ? graded->AsString() : std::nullopt;
+        if (gradedText.has_value() && !gradedText->empty()) {
+            score->updatedAt = Utf8ToWide(std::string(*gradedText));
+            score->updatedAtDay = false;
+        }
+    }
+    if (score->updatedAt.empty()) {
+    if (const jsonlite::Value* history = node.Find("history"); history != nullptr && history->IsObject()) {
+        const jsonlite::Value* bucket = history->Find("updated_bucket");
+        const auto bucketText = bucket != nullptr ? bucket->AsString() : std::nullopt;
+        if (bucketText.has_value() && !bucketText->empty()) {
+            score->updatedAt = Utf8ToWide(std::string(*bucketText));
+            score->updatedAtDay = true;
+        } else if (const jsonlite::Value* points = history->Find("points"); points != nullptr) {
+            if (const jsonlite::Value::Array* days = points->AsArray(); days != nullptr && !days->empty()) {
+                const jsonlite::Value* at = days->back().Find("at");
+                const auto atText = at != nullptr ? at->AsString() : std::nullopt;
+                if (atText.has_value() && !atText->empty()) {
+                    score->updatedAt = Utf8ToWide(std::string(*atText));
+                    score->updatedAtDay = true;
+                }
+            }
+        }
+    }
     }
     if (score->score >= 100.0) {
         score->status = L"green";
@@ -1391,127 +1432,139 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     ModelIqSnapshot snapshot;
     snapshot.kind = kind;
 
-    std::wstring errorMessage;
-    const std::optional<std::string> catalogJson = HttpExchange(
-        L"CodexUsageBar/0.1",
-        L"codexradar.com",
-        L"/data/intelligence-efficiency.json?v=station-preview-v1",
-        L"GET",
-        {
-            L"Accept: application/json",
-            L"Cache-Control: no-cache",
-            L"User-Agent: CodexUsageBar",
-        },
-        nullptr,
-        &errorMessage,
-        "\"history\":");
-    if (!catalogJson.has_value()) {
-        snapshot.errorMessage = errorMessage.empty() ? L"CodexRadar request failed" : errorMessage;
-        return snapshot;
-    }
-
-    snapshot = ParseModelIqJson(WithoutJsonHistory(*catalogJson), &errorMessage);
-    snapshot.kind = kind;
-    if (!snapshot.success) {
-        snapshot.errorMessage = errorMessage;
-        return snapshot;
-    }
-
-    // gpt-6.1-sol is on RadarBench and is absent from the station JSON.
-    // Only those missing models are fetched, so the catalog stay one request.
     std::wstring bindingError;
     const std::optional<std::string> bindingJson = HttpGetCodexRadarMetricsJson(
         L"codexradar.com",
         L"/data/radar-bench-binding.json",
         &bindingError);
+    if (!bindingJson.has_value()) {
+        snapshot.errorMessage = bindingError.empty() ? L"CodexRadar binding request failed" : bindingError;
+        return snapshot;
+    }
     std::string benchmark;
-    const std::optional<std::vector<RadarBenchSelection>> selections = bindingJson.has_value()
-        ? ParseRadarBenchBinding(*bindingJson, &benchmark, &bindingError)
-        : std::nullopt;
-    std::vector<RadarBenchSelection> missing;
-    if (selections.has_value()) {
-        for (const RadarBenchSelection& selection : *selections) {
-            const std::wstring model = Utf8ToWide(selection.model);
-            const bool present = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
-                [&](const ModelIqScore& score) { return score.model == model; });
-            if (!present) {
-                missing.push_back(selection);
+    const std::optional<std::vector<RadarBenchSelection>> selections =
+        ParseRadarBenchBinding(*bindingJson, &benchmark, &bindingError);
+    if (!selections.has_value()) {
+        snapshot.errorMessage = bindingError.empty() ? L"CodexRadar binding is not usable" : bindingError;
+        return snapshot;
+    }
+
+    std::vector<std::optional<std::string>> bodies(selections->size());
+    std::atomic<size_t> cursor{0};
+    const size_t workerCount = std::min<size_t>(3, selections->size());
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    for (size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+        workers.emplace_back([&]() {
+            for (;;) {
+                const size_t index = cursor.fetch_add(1);
+                if (index >= selections->size()) {
+                    return;
+                }
+                const RadarBenchSelection& selection = (*selections)[index];
+                const std::wstring path = Utf8ToWide(
+                    "/api/radar-bench-score?model=" + UrlQueryEncode(selection.model)
+                    + "&effort=" + UrlQueryEncode(selection.effort)
+                    + "&view=summary&selection=user-selected-v1");
+                std::wstring cellError;
+                bodies[index] = HttpExchange(
+                    L"CodexUsageBar/0.1",
+                    L"codexradar.com",
+                    path,
+                    L"GET",
+                    {
+                        L"Accept: application/json",
+                        L"Cache-Control: no-cache",
+                        L"User-Agent: CodexUsageBar",
+                        L"X-Radar-Bench-Selection: user-selected-v1",
+                    },
+                    nullptr,
+                    &cellError,
+                    nullptr);
+            }
+        });
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+
+    for (size_t index = 0; index < bodies.size(); ++index) {
+        if (!bodies[index].has_value()) {
+            continue;
+        }
+        jsonlite::Parser parser(*bodies[index]);
+        const std::optional<jsonlite::Value> root = parser.Parse();
+        if (!root.has_value()) {
+            continue;
+        }
+        ModelIqScore score;
+        std::wstring parseError;
+        if (!FillModelIqScoreFromRadarSummary(*root, benchmark, kind, &score, &parseError)) {
+            continue;
+        }
+        const RadarBenchSelection& selection = (*selections)[index];
+        if (score.model != Utf8ToWide(selection.model) || score.effort != Utf8ToWide(selection.effort)) {
+            continue;
+        }
+        const std::wstring key = ModelIqDedupKey(score);
+        const bool duplicate = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
+            [&](const ModelIqScore& existing) { return ModelIqDedupKey(existing) == key; });
+        if (key.empty() || duplicate) {
+            continue;
+        }
+        snapshot.scores.push_back(std::move(score));
+    }
+
+    // ZCode, DSH Flash and Grok are not in the RadarBench binding.
+    // The station preview publishes them only in the intelligence-efficiency snapshot.
+    if (kind == RadarMetricKind::SoftwareEngineering) {
+        std::wstring stationError;
+        const std::optional<std::string> stationJson = HttpExchange(
+            L"CodexUsageBar/0.1",
+            L"codexradar.com",
+            L"/data/intelligence-efficiency.json?v=station-preview-v1",
+            L"GET",
+            {
+                L"Accept: application/json",
+                L"Cache-Control: no-cache",
+                L"User-Agent: CodexUsageBar",
+            },
+            nullptr,
+            &stationError,
+            "\"history\":");
+        if (stationJson.has_value()) {
+            const ModelIqSnapshot station = ParseModelIqJson(WithoutJsonHistory(*stationJson), &stationError);
+            for (const ModelIqScore& score : station.scores) {
+                const bool wanted = score.model == L"glm-5.3"
+                    || score.model == L"dsh-deepseek-v4-flash"
+                    || score.model == L"grok-4.6";
+                if (!wanted) {
+                    continue;
+                }
+                const std::wstring key = ModelIqDedupKey(score);
+                const bool duplicate = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
+                    [&](const ModelIqScore& existing) { return ModelIqDedupKey(existing) == key; });
+                if (key.empty() || duplicate) {
+                    continue;
+                }
+                snapshot.scores.push_back(score);
             }
         }
     }
-    if (!missing.empty()) {
-        std::vector<std::optional<std::string>> bodies(missing.size());
-        std::atomic<size_t> cursor{0};
-        const size_t workerCount = std::min<size_t>(3, missing.size());
-        std::vector<std::thread> workers;
-        workers.reserve(workerCount);
-        for (size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
-            workers.emplace_back([&]() {
-                for (;;) {
-                    const size_t index = cursor.fetch_add(1);
-                    if (index >= missing.size()) {
-                        return;
-                    }
-                    const RadarBenchSelection& selection = missing[index];
-                    const std::wstring path = Utf8ToWide(
-                        "/api/radar-bench-score?model=" + UrlQueryEncode(selection.model)
-                        + "&effort=" + UrlQueryEncode(selection.effort)
-                        + "&view=summary&selection=user-selected-v1");
-                    std::wstring cellError;
-                    bodies[index] = HttpExchange(
-                        L"CodexUsageBar/0.1",
-                        L"codexradar.com",
-                        path,
-                        L"GET",
-                        {
-                            L"Accept: application/json",
-                            L"Cache-Control: no-cache",
-                            L"User-Agent: CodexUsageBar",
-                            L"X-Radar-Bench-Selection: user-selected-v1",
-                        },
-                        nullptr,
-                        &cellError,
-                        nullptr);
-                }
-            });
-        }
-        for (std::thread& worker : workers) {
-            worker.join();
-        }
-        for (size_t index = 0; index < bodies.size(); ++index) {
-            if (!bodies[index].has_value()) {
-                continue;
-            }
-            jsonlite::Parser parser(*bodies[index]);
-            const std::optional<jsonlite::Value> root = parser.Parse();
-            if (!root.has_value()) {
-                continue;
-            }
-            ModelIqScore score;
-            std::wstring parseError;
-            if (!FillModelIqScoreFromRadarSummary(*root, benchmark, &score, &parseError)) {
-                continue;
-            }
-            const RadarBenchSelection& selection = missing[index];
-            if (score.model != Utf8ToWide(selection.model) || score.effort != Utf8ToWide(selection.effort)) {
-                continue;
-            }
-            const std::wstring key = ModelIqDedupKey(score);
-            const bool duplicate = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
-                [&](const ModelIqScore& existing) { return ModelIqDedupKey(existing) == key; });
-            if (key.empty() || duplicate) {
-                continue;
-            }
-            snapshot.scores.push_back(std::move(score));
-        }
-        std::sort(snapshot.scores.begin(), snapshot.scores.end(),
-            [](const ModelIqScore& lhs, const ModelIqScore& rhs) {
-                if (lhs.score != rhs.score) {
-                    return lhs.score > rhs.score;
-                }
-                return lhs.label < rhs.label;
-            });
+
+    if (snapshot.scores.empty()) {
+        snapshot.errorMessage = L"CodexRadar returned no component scores";
+        return snapshot;
     }
+    std::sort(snapshot.scores.begin(), snapshot.scores.end(),
+        [](const ModelIqScore& lhs, const ModelIqScore& rhs) {
+            if (lhs.score != rhs.score) {
+                return lhs.score > rhs.score;
+            }
+            return lhs.label < rhs.label;
+        });
+    snapshot.success = true;
+    snapshot.benchmarkId = Utf8ToWide(benchmark);
     return snapshot;
 }
 
@@ -1974,7 +2027,7 @@ std::optional<std::string> CodexUsageFetcher::HttpGetCodexRadarMetricsJson(
     return HttpGetJson(
         L"CodexUsageBar/0.1",
         host,
-        path != nullptr ? path : L"/data/intelligence-efficiency.json",
+        path != nullptr ? path : L"/data/radar-bench-binding.json",
         {
             L"Accept: application/json",
             L"Cache-Control: no-cache",
