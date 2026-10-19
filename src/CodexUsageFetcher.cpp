@@ -228,19 +228,7 @@ struct RadarBenchSelection {
 };
 
 const char* RadarComponentKey(RadarMetricKind kind) {
-    switch (kind) {
-    case RadarMetricKind::SoftwareEngineering:
-        return "deepswe";
-    case RadarMetricKind::VisualSpatial:
-        return "pompeii";
-    case RadarMetricKind::Operations:
-        return "tb4";
-    case RadarMetricKind::Research:
-        return "science";
-    case RadarMetricKind::Overall:
-        return nullptr;
-    }
-    return nullptr;
+    return kind == RadarMetricKind::VisualSpatial ? "pompeii" : "deepswe";
 }
 
 bool FillModelIqScoreFromRadarSummary(
@@ -271,16 +259,10 @@ bool FillModelIqScoreFromRadarSummary(
         return false;
     }
 
-    const jsonlite::Value* component = nullptr;
-    const jsonlite::Value* scoreNode = nullptr;
-    if (kind == RadarMetricKind::Overall) {
-        scoreNode = node.Find("score");
-    } else {
-        const char* componentKey = RadarComponentKey(kind);
-        const jsonlite::Value* sources = node.Find("source_scores");
-        component = componentKey != nullptr && sources != nullptr ? sources->Find(componentKey) : nullptr;
-        scoreNode = component != nullptr ? component->Find("score") : nullptr;
-    }
+    const char* componentKey = RadarComponentKey(kind);
+    const jsonlite::Value* sources = node.Find("source_scores");
+    const jsonlite::Value* component = sources != nullptr ? sources->Find(componentKey) : nullptr;
+    const jsonlite::Value* scoreNode = component != nullptr ? component->Find("score") : nullptr;
     if (scoreNode == nullptr || scoreNode->IsNull()) {
         if (errorMessage != nullptr) {
             *errorMessage = L"CodexRadar summary has no component score";
@@ -310,14 +292,12 @@ bool FillModelIqScoreFromRadarSummary(
             score->effort = Utf8ToWide(effortUtf8);
         }
     }
-    const jsonlite::Value* coverageNode = component != nullptr ? component->Find("coverage") : node.Find("coverage");
-    if (coverageNode != nullptr) {
+    if (const jsonlite::Value* coverageNode = component->Find("coverage"); coverageNode != nullptr) {
         if (auto coverage = coverageNode->AsNumber(); coverage.has_value()) {
             score->passed = static_cast<int>(*coverage);
         }
     }
-    const jsonlite::Value* tasksNode = component != nullptr ? component->Find("required_tasks") : node.Find("required_tasks");
-    if (tasksNode != nullptr) {
+    if (const jsonlite::Value* tasksNode = component->Find("required_tasks"); tasksNode != nullptr) {
         if (auto tasks = tasksNode->AsNumber(); tasks.has_value()) {
             score->tasks = static_cast<int>(*tasks);
         }
@@ -1535,8 +1515,9 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
         snapshot.scores.push_back(std::move(score));
     }
 
-    // These models have overall station scores, but no RadarBench component scores.
-    if (kind == RadarMetricKind::Overall) {
+    // ZCode, DSH Flash and Grok are not in the RadarBench binding.
+    // The station preview publishes them only in the intelligence-efficiency snapshot.
+    if (kind == RadarMetricKind::SoftwareEngineering) {
         std::wstring stationError;
         const std::optional<std::string> stationJson = HttpExchange(
             L"CodexUsageBar/0.1",

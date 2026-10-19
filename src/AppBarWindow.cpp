@@ -52,20 +52,7 @@ constexpr UINT kCommandTaskbarMode = 17;
 constexpr UINT kCommandRefreshToken = 18;
 constexpr UINT kCommandModelScoresOff = 19;
 constexpr UINT kCommandModelScoresSoftware = 20;
-constexpr UINT kCommandModelScoresVisual = 21;
 constexpr UINT kCommandModelScoresToggle = 42;
-struct ModelScoreKindOption {
-    RadarMetricKind kind;
-    const wchar_t* english;
-    const wchar_t* chinese;
-};
-constexpr ModelScoreKindOption kModelScoreKindOptions[] = {
-    { RadarMetricKind::Overall, L"All", L"总览" },
-    { RadarMetricKind::SoftwareEngineering, L"Software", L"软件" },
-    { RadarMetricKind::VisualSpatial, L"Visual", L"视觉" },
-    { RadarMetricKind::Operations, L"Ops", L"操作" },
-    { RadarMetricKind::Research, L"Research", L"研究" },
-};
 constexpr UINT kCommandResetCredit = 22;
 constexpr UINT kCommandImportAccount = 23;
 constexpr UINT kCommandPasteImport = 24;
@@ -112,8 +99,6 @@ constexpr UINT kUiSummary = 85;
 constexpr UINT kCommandAccountBase = 1000;
 constexpr UINT kMaxAuthMenuAccounts = 64;
 constexpr int kModelScoresPageSize = 10;
-constexpr int kModelScoreKindRow = 18;
-constexpr int kModelScoreKindGap = 4;
 constexpr int kDefaultWidgetWidth = 420;
 constexpr int kMinimumWidgetWidth = 360;
 constexpr int kSimpleDefaultWidgetWidth = 240;
@@ -522,18 +507,10 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             GetCursorPos(&screenPoint);
             POINT clientPoint = screenPoint;
             ScreenToClient(hwnd_, &clientPoint);
-            if (showModelScores_) {
-                if (modelScoresSourceRect_.right > modelScoresSourceRect_.left
-                    && PtInRect(&modelScoresSourceRect_, clientPoint)) {
-                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
-                    return TRUE;
-                }
-                for (const RECT& rect : modelScoreKindRects_) {
-                    if (rect.right > rect.left && PtInRect(&rect, clientPoint)) {
-                        SetCursor(LoadCursorW(nullptr, IDC_HAND));
-                        return TRUE;
-                    }
-                }
+            if (modelScoresSourceRect_.right > modelScoresSourceRect_.left
+                && PtInRect(&modelScoresSourceRect_, clientPoint)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
             }
             switch (HitTestDragMode(clientPoint)) {
                 case DragMode::ResizeRight:
@@ -1057,11 +1034,8 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
     const int midGap = ScaleForDpi(hwnd_, 4);
     const int pagerH = ScaleForDpi(hwnd_, 18);
     const int footH = ScaleForDpi(hwnd_, 14);
-    const int kindGap = ScaleForDpi(hwnd_, kModelScoreKindGap);
-    const int kindH = ScaleForDpi(hwnd_, kModelScoreKindRow);
     const int queryH = ModelScoreQueryRowHeight();
-    return gap + pad + queryH + midGap + filterH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad
-        + kindGap + kindH;
+    return gap + pad + queryH + midGap + filterH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
 }
 
 bool AppBarWindow::IsModelScoreFamilySelected(const std::wstring& familyKey) const {
@@ -1497,10 +1471,7 @@ void AppBarWindow::LoadSettings() {
     simpleMode_ = GetPrivateProfileIntW(L"layout", L"simple_mode", 0, path.c_str()) != 0;
     taskbarMode_ = GetPrivateProfileIntW(L"layout", L"taskbar_mode", 0, path.c_str()) != 0;
     showModelScores_ = GetPrivateProfileIntW(L"layout", L"show_model_scores", 0, path.c_str()) != 0;
-    const int savedModelScoreKind = GetPrivateProfileIntW(L"layout", L"model_score_kind", 0, path.c_str());
-    modelScoreKind_ = savedModelScoreKind >= 0 && savedModelScoreKind <= 4
-        ? static_cast<RadarMetricKind>(savedModelScoreKind)
-        : RadarMetricKind::SoftwareEngineering;
+    modelScoreKind_ = RadarMetricKind::SoftwareEngineering;
     wchar_t familyList[1024] = {};
     GetPrivateProfileStringW(L"layout", L"model_score_families", L"", familyList, 1024, path.c_str());
     selectedModelFamilyKeys_.clear();
@@ -1566,7 +1537,7 @@ void AppBarWindow::SaveSettings() const {
     WritePrivateProfileStringW(L"layout", L"taskbar_mode", taskbarMode_ ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"layout", L"show_model_scores", showModelScores_ ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"layout", L"model_score_kind",
-        std::to_wstring(static_cast<int>(modelScoreKind_)).c_str(), path.c_str());
+        modelScoreKind_ == RadarMetricKind::VisualSpatial ? L"1" : L"0", path.c_str());
     std::wstring familyList;
     for (const std::wstring& key : selectedModelFamilyKeys_) {
         if (!familyList.empty()) {
@@ -2351,15 +2322,6 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
     }
 
     if (showModelScores_) {
-        for (size_t index = 0; index < modelScoreKindRects_.size(); ++index) {
-            const RECT& rect = modelScoreKindRects_[index];
-            if (rect.right > rect.left && PtInRect(&rect, clientPoint)) {
-                if (index < sizeof(kModelScoreKindOptions) / sizeof(kModelScoreKindOptions[0])) {
-                    SetModelScoreMode(true, kModelScoreKindOptions[index].kind);
-                }
-                return true;
-            }
-        }
         for (const ModelScoreFilterChip& chip : modelScoreFilterChips_) {
             if (chip.rect.right > chip.rect.left && PtInRect(&chip.rect, clientPoint)) {
                 ToggleModelScoreFamily(chip.key);
@@ -2726,6 +2688,9 @@ void AppBarWindow::OnModelScoresUpdated(ModelIqSnapshot* snapshot) {
 }
 
 void AppBarWindow::SetModelScoreMode(bool enabled, RadarMetricKind kind) {
+    if (enabled) {
+        kind = RadarMetricKind::SoftwareEngineering;
+    }
     if (showModelScores_ == enabled && (!enabled || modelScoreKind_ == kind)) {
         return;
     }
@@ -2851,7 +2816,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     modelScoreQueryPlaced_ = false;
     modelScoresNextRect_ = {};
     modelScoresSourceRect_ = {};
-    modelScoreKindRects_.clear();
     modelScoreFilterChips_.clear();
     const PaceInfo pace = BuildPaceInfo(snapshot_);
     const int padX = ScaleForDpi(hwnd_, kHorizontalPadding);
@@ -3003,8 +2967,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int pad = ScaleForDpi(hwnd_, 4);
         const int rowH = ScaleForDpi(hwnd_, 22);
         const int footH = ScaleForDpi(hwnd_, 14);
-        const int kindGap = ScaleForDpi(hwnd_, kModelScoreKindGap);
-        const int kindH = ScaleForDpi(hwnd_, kModelScoreKindRow);
         const int innerPad = ScaleForDpi(hwnd_, 8);
         const int cellPad = ScaleForDpi(hwnd_, 6);
         const int midGap = ScaleForDpi(hwnd_, 4);
@@ -3311,40 +3273,15 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
 
         RECT attrRect = MakeRect(box.left + innerPad, box.bottom - pad - footH,
             box.right - innerPad, box.bottom - pad);
+        modelScoresSourceRect_ = attrRect;
         const std::wstring sourceText = LocalizeText(L"Data: Codex Radar", L"数据来自 Codex 雷达");
         const COLORREF linkColor = lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163);
         drawTextBlock(textFormatFoot_.Get(), sourceText, attrRect, linkColor,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
         const int linkWidth = static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), sourceText)));
-        modelScoresSourceRect_ = MakeRect(attrRect.left, attrRect.top,
-            std::min(attrRect.right, attrRect.left + linkWidth), attrRect.bottom);
         const int underlineTop = attrRect.bottom - std::max(1, ScaleForDpi(hwnd_, 2));
         fillRect(MakeRect(attrRect.left, underlineTop, attrRect.left + linkWidth, underlineTop + 1), linkColor);
-
-        const int chipPadX = ScaleForDpi(hwnd_, 8);
-        const int chipGap = ScaleForDpi(hwnd_, 4);
-        const int kindTop = box.bottom + kindGap;
-        const size_t tabCount = sizeof(kModelScoreKindOptions) / sizeof(kModelScoreKindOptions[0]);
-        modelScoreKindRects_.assign(tabCount, {});
-        int tabLeft = box.left;
-        for (size_t index = 0; index < tabCount; ++index) {
-            const std::wstring label = LocalizeText(
-                kModelScoreKindOptions[index].english, kModelScoreKindOptions[index].chinese);
-            const int tabWidth = static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), label)))
-                + chipPadX * 2;
-            const RECT tabRect = MakeRect(tabLeft, kindTop, tabLeft + tabWidth, kindTop + kindH);
-            modelScoreKindRects_[index] = tabRect;
-            const bool selected = kModelScoreKindOptions[index].kind == modelScoreKind_;
-            if (selected) {
-                fillRect(tabRect, chipSelectedBg);
-            }
-            drawRectBorder(tabRect, border);
-            drawTextBlock(textFormatFoot_.Get(), label, tabRect,
-                selected ? chipSelectedText : textSecondary,
-                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-            tabLeft = tabRect.right + chipGap;
-        }
-        return gap + boxH + kindGap + kindH;
+        return gap + boxH;
     };
 
     if (taskbarMode_) {
@@ -4606,8 +4543,6 @@ void AppBarWindow::HandleMenuCommand(UINT command) {
         SetModelScoreMode(false, modelScoreKind_);
     } else if (command == kCommandModelScoresSoftware) {
         SetModelScoreMode(true, RadarMetricKind::SoftwareEngineering);
-    } else if (command == kCommandModelScoresVisual) {
-        SetModelScoreMode(true, RadarMetricKind::VisualSpatial);
     } else if (command == kCommandLanguageEnglish) {
         SetLanguage(Language::English);
     } else if (command == kCommandLanguageChinese) {

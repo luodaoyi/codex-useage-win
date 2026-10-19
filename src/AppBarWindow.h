@@ -333,7 +333,6 @@ private:
     RECT modelScoresPrevRect_ = {};
     RECT modelScoresNextRect_ = {};
     RECT modelScoresSourceRect_ = {};
-    std::vector<RECT> modelScoreKindRects_;
 
     UsageSnapshot snapshot_;
     ModelIqSnapshot modelScores_;
