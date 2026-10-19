@@ -1406,28 +1406,6 @@ ReleaseVersionInfo CodexUsageFetcher::FetchLatestRelease() const {
     return info;
 }
 
-std::string WithoutJsonHistory(const std::string& jsonText) {
-    size_t pos = jsonText.find("\n  \"history\"");
-    if (pos == std::string::npos) {
-        pos = jsonText.find(",\"history\"");
-    }
-    if (pos == std::string::npos) {
-        return jsonText;
-    }
-    size_t end = pos;
-    while (end > 0
-        && (jsonText[end - 1] == ' ' || jsonText[end - 1] == '\n'
-            || jsonText[end - 1] == '\r' || jsonText[end - 1] == '\t')) {
-        --end;
-    }
-    if (end > 0 && jsonText[end - 1] == ',') {
-        --end;
-    }
-    std::string trimmed = jsonText.substr(0, end);
-    trimmed += "\n}\n";
-    return trimmed;
-}
-
 ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     ModelIqSnapshot snapshot;
     snapshot.kind = kind;
@@ -1513,43 +1491,6 @@ ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
             continue;
         }
         snapshot.scores.push_back(std::move(score));
-    }
-
-    // ZCode, DSH Flash and Grok are not in the RadarBench binding.
-    // The station preview publishes them only in the intelligence-efficiency snapshot.
-    if (kind == RadarMetricKind::SoftwareEngineering) {
-        std::wstring stationError;
-        const std::optional<std::string> stationJson = HttpExchange(
-            L"CodexUsageBar/0.1",
-            L"codexradar.com",
-            L"/data/intelligence-efficiency.json?v=station-preview-v1",
-            L"GET",
-            {
-                L"Accept: application/json",
-                L"Cache-Control: no-cache",
-                L"User-Agent: CodexUsageBar",
-            },
-            nullptr,
-            &stationError,
-            "\"history\":");
-        if (stationJson.has_value()) {
-            const ModelIqSnapshot station = ParseModelIqJson(WithoutJsonHistory(*stationJson), &stationError);
-            for (const ModelIqScore& score : station.scores) {
-                const bool wanted = score.model == L"glm-5.3"
-                    || score.model == L"dsh-deepseek-v4-flash"
-                    || score.model == L"grok-4.6";
-                if (!wanted) {
-                    continue;
-                }
-                const std::wstring key = ModelIqDedupKey(score);
-                const bool duplicate = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
-                    [&](const ModelIqScore& existing) { return ModelIqDedupKey(existing) == key; });
-                if (key.empty() || duplicate) {
-                    continue;
-                }
-                snapshot.scores.push_back(score);
-            }
-        }
     }
 
     if (snapshot.scores.empty()) {

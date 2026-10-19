@@ -1020,13 +1020,6 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
         return 0;
     }
 
-    RECT clientRect = {};
-    GetClientRect(hwnd_, &clientRect);
-    int innerWidth = RectWidth(clientRect) - ScaleForDpi(hwnd_, kHorizontalPadding * 2 + 24);
-    if (innerWidth <= 0) {
-        innerWidth = GetMinimumWidgetWidth() - ScaleForDpi(hwnd_, kHorizontalPadding * 2 + 24);
-    }
-    const int filterH = GetModelScoreFilterBandHeight(std::max(1, innerWidth));
     const int rows = GetModelScoresVisibleRowCount();
     const int gap = ScaleForDpi(hwnd_, 6);
     const int pad = ScaleForDpi(hwnd_, 4);
@@ -1035,7 +1028,7 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
     const int pagerH = ScaleForDpi(hwnd_, 18);
     const int footH = ScaleForDpi(hwnd_, 14);
     const int queryH = ModelScoreQueryRowHeight();
-    return gap + pad + queryH + midGap + filterH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
+    return gap + pad + queryH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
 }
 
 bool AppBarWindow::IsModelScoreFamilySelected(const std::wstring& familyKey) const {
@@ -1046,12 +1039,8 @@ bool AppBarWindow::IsModelScoreFamilySelected(const std::wstring& familyKey) con
         != selectedModelFamilyKeys_.end();
 }
 
-bool AppBarWindow::MatchesModelScoreFamily(const ModelIqScore& score) const {
-    if (selectedModelFamilyKeys_.empty()) {
-        return true;
-    }
-    return std::find(selectedModelFamilyKeys_.begin(), selectedModelFamilyKeys_.end(), score.familyKey)
-        != selectedModelFamilyKeys_.end();
+bool AppBarWindow::MatchesModelScoreFamily(const ModelIqScore&) const {
+    return true;
 }
 
 bool AppBarWindow::MatchesModelScoreFilters(const ModelIqScore& score) const {
@@ -1472,28 +1461,7 @@ void AppBarWindow::LoadSettings() {
     taskbarMode_ = GetPrivateProfileIntW(L"layout", L"taskbar_mode", 0, path.c_str()) != 0;
     showModelScores_ = GetPrivateProfileIntW(L"layout", L"show_model_scores", 0, path.c_str()) != 0;
     modelScoreKind_ = RadarMetricKind::SoftwareEngineering;
-    wchar_t familyList[1024] = {};
-    GetPrivateProfileStringW(L"layout", L"model_score_families", L"", familyList, 1024, path.c_str());
     selectedModelFamilyKeys_.clear();
-    const std::wstring familyText = familyList;
-    size_t start = 0;
-    while (start <= familyText.size()) {
-        const size_t comma = std::min(familyText.find(L',', start), familyText.size());
-        std::wstring key = familyText.substr(start, comma - start);
-        while (!key.empty() && (key.front() == L' ' || key.front() == L'\t')) {
-            key.erase(key.begin());
-        }
-        while (!key.empty() && (key.back() == L' ' || key.back() == L'\t')) {
-            key.pop_back();
-        }
-        if (!key.empty()) {
-            selectedModelFamilyKeys_.push_back(key);
-        }
-        if (comma == familyText.size()) {
-            break;
-        }
-        start = comma + 1;
-    }
     if (taskbarMode_) {
         simpleMode_ = false;
     }
@@ -2983,10 +2951,9 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int rows = GetModelScoresVisibleRowCount();
         const int filterInnerLeft = left + innerPad;
         const int filterInnerRight = right - innerPad;
-        const int filterH = GetModelScoreFilterBandHeight(std::max(1, filterInnerRight - filterInnerLeft));
         const int queryH = ModelScoreQueryRowHeight();
         const int tableH = rowH * (rows + 1);
-        const int boxH = pad + queryH + midGap + filterH + midGap + tableH + midGap + pagerH + footH + pad;
+        const int boxH = pad + queryH + midGap + tableH + midGap + pagerH + footH + pad;
         RECT box = MakeRect(left, top + gap, right, top + gap + boxH);
         const COLORREF cardBg = lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36);
         const COLORREF headerBg = lightTheme_ ? RGB(236, 240, 237) : RGB(44, 52, 47);
@@ -3013,24 +2980,11 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
 
         const int queryTop = box.top + pad;
         PlaceModelScoreQueryEdit(MakeRect(filterInnerLeft, queryTop, filterInnerRight, queryTop + queryH));
-        const int filterTop = queryTop + queryH + midGap;
-        modelScoreFilterChips_ = BuildModelScoreFilterChips(
-            box.left + innerPad, filterTop, box.right - innerPad);
-        const COLORREF chipSelectedBg = lightTheme_ ? RGB(224, 246, 239) : RGB(31, 58, 46);
-        const COLORREF chipSelectedText = lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163);
-        for (const ModelScoreFilterChip& chip : modelScoreFilterChips_) {
-            if (chip.selected) {
-                fillRect(chip.rect, chipSelectedBg);
-            }
-            drawRectBorder(chip.rect, border);
-            drawTextBlock(textFormatFoot_.Get(), chip.label, chip.rect,
-                chip.selected ? chipSelectedText : textSecondary,
-                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-        }
+        modelScoreFilterChips_.clear();
 
         const int tableLeft = box.left + 1;
         const int tableRight = box.right - 1;
-        const int tableTop = filterTop + filterH + midGap;
+        const int tableTop = queryTop + queryH + midGap;
         const int tableBottom = tableTop + tableH;
         const int updatedLeft = tableRight - updatedColW;
         const int costLeft = updatedLeft - costColW;
