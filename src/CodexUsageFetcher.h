@@ -76,6 +76,9 @@ struct TokenRefreshResult {
 enum class RadarMetricKind {
     SoftwareEngineering = 0,
     VisualSpatial = 1,
+    Operations = 2,
+    Research = 3,
+    Overall = 4,
 };
 
 struct ModelIqScore {
