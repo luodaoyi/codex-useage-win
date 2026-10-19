@@ -60,6 +60,50 @@ inline bool ContainsAsciiInsensitive(const std::wstring& haystack, const std::ws
     return false;
 }
 
+// Label without the trailing effort word. The depth column shows that word.
+inline std::wstring ModelScoreDisplayName(const std::wstring& label, const std::wstring& effort) {
+    std::wstring name = label;
+    if (!effort.empty()) {
+        const std::wstring suffix = L" " + effort;
+        if (name.size() > suffix.size()
+            && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            name.resize(name.size() - suffix.size());
+            while (!name.empty() && name.back() == L' ') {
+                name.pop_back();
+            }
+        }
+    }
+    return name;
+}
+
+// "$1.99", never "$  1.99". Width lives in the column, not inside the text.
+inline std::wstring FormatRadarCostText(bool hasPrice, double usd) {
+    if (!hasPrice) {
+        return L"--";
+    }
+    wchar_t buffer[32] = {};
+    swprintf_s(buffer, L"$%.2f", usd);
+    return std::wstring(buffer);
+}
+
+// Client width that keeps the measured model name inside the name cell.
+// nameTextWidth is the glyph width. The other inputs are full column widths.
+inline int RadarScoreTableMinimumClientWidth(
+    int nameTextWidth,
+    int effortCol,
+    int scoreCol,
+    int timeCol,
+    int costCol,
+    int updatedCol,
+    int accentWidth,
+    int cellPad,
+    int nameGap,
+    int horizontalPadding) {
+    return nameTextWidth + accentWidth + cellPad + nameGap
+        + effortCol + scoreCol + timeCol + costCol + updatedCol
+        + 2 + horizontalPadding * 2;
+}
+
 // model id plus the display name, without the effort suffix. Space-separated
 // query words match if any one word is contained (flash luna => flash or luna).
 inline bool ModelNameMatchesQuery(
@@ -87,17 +131,7 @@ inline bool ModelNameMatchesQuery(
         return true;
     }
 
-    std::wstring name = label;
-    if (!effort.empty()) {
-        const std::wstring suffix = L" " + effort;
-        if (name.size() > suffix.size()
-            && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
-            name.resize(name.size() - suffix.size());
-            while (!name.empty() && name.back() == L' ') {
-                name.pop_back();
-            }
-        }
-    }
+    const std::wstring name = ModelScoreDisplayName(label, effort);
     std::wstring haystack = model;
     if (!name.empty()) {
         if (!haystack.empty()) {

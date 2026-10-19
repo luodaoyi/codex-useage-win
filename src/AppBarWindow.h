@@ -257,6 +257,17 @@ private:
     void DrawAccountDropdown();
     void ShowContextMenu(POINT screenPoint);
     HMENU CreateContextMenuHandle();
+    struct ModelScoreColumnWidths {
+        int effort = 0;
+        int score = 0;
+        int time = 0;
+        int cost = 0;
+        int updated = 0;
+        int nameText = 0;
+    };
+    int MeasureTextWidthPx(IDWriteTextFormat* format, const std::wstring& text) const;
+    ModelScoreColumnWidths MeasureModelScoreColumnWidths() const;
+    int ModelScoreTableMinimumClientWidth() const;
     int GetMinimumWidgetWidth() const;
     int GetMinimumWidgetHeight(int width) const;
     void SetLanguage(Language language);

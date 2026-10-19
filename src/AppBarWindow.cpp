@@ -734,21 +734,113 @@ RECT AppBarWindow::GetCurrentMonitorWorkRect() const {
     return GetDesktopClientRect();
 }
 
+int AppBarWindow::MeasureTextWidthPx(IDWriteTextFormat* format, const std::wstring& text) const {
+    if (format == nullptr || dwriteFactory_ == nullptr || text.empty()) {
+        return 0;
+    }
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(dwriteFactory_->CreateTextLayout(
+            text.c_str(),
+            static_cast<UINT32>(text.size()),
+            format,
+            4096.0f,
+            256.0f,
+            layout.GetAddressOf()))) {
+        return 0;
+    }
+    DWRITE_TEXT_METRICS metrics = {};
+    if (FAILED(layout->GetMetrics(&metrics))) {
+        return 0;
+    }
+    return static_cast<int>(std::ceil(metrics.widthIncludingTrailingWhitespace));
+}
+
+AppBarWindow::ModelScoreColumnWidths AppBarWindow::MeasureModelScoreColumnWidths() const {
+    ModelScoreColumnWidths cols;
+    const int cellPad = ScaleForDpi(hwnd_, 6);
+    IDWriteTextFormat* mono = textFormatMono_ ? textFormatMono_.Get() : textFormatFoot_.Get();
+    IDWriteTextFormat* monoBold = textFormatMonoBold_ ? textFormatMonoBold_.Get() : mono;
+    if (mono == nullptr) {
+        cols.score = ScaleForDpi(hwnd_, 52);
+        cols.time = ScaleForDpi(hwnd_, 64);
+        cols.cost = ScaleForDpi(hwnd_, 68);
+        cols.updated = ScaleForDpi(hwnd_, 92);
+        cols.effort = ScaleForDpi(hwnd_, 72);
+        int chars = 4;
+        for (const ModelIqScore& score : modelScores_.scores) {
+            chars = std::max(chars, static_cast<int>(ModelScoreDisplayName(score.label, score.effort).size()));
+        }
+        cols.nameText = chars * ScaleForDpi(hwnd_, 8);
+        return cols;
+    }
+
+    auto widthOf = [&](IDWriteTextFormat* format, const std::wstring& text) {
+        return MeasureTextWidthPx(format, text);
+    };
+    cols.score = std::max(ScaleForDpi(hwnd_, 52), widthOf(mono, L"000.0") + cellPad * 2);
+    cols.time = std::max(
+        ScaleForDpi(hwnd_, 64),
+        widthOf(mono, language_ == Language::Chinese ? L"000.0分" : L"000.0m") + cellPad * 2);
+    int costText = widthOf(mono, L"$000.00");
+    for (const ModelIqScore& score : modelScores_.scores) {
+        costText = std::max(costText, widthOf(mono, FormatRadarCostText(score.hasPrice, score.averagePriceUsd)));
+    }
+    cols.cost = std::max(ScaleForDpi(hwnd_, 68), costText + cellPad * 2);
+    cols.updated = std::max(
+        ScaleForDpi(hwnd_, 92),
+        static_cast<int>(std::ceil(std::max(
+            widthOf(mono, L"00-00 00:00"),
+            widthOf(mono, LocalizeText(L"Updated", L"更新"))))) + cellPad * 2);
+    const int effortSample = std::max(widthOf(monoBold, L"MEDIUM"), widthOf(monoBold, L"XHIGH"));
+    cols.effort = std::max(ScaleForDpi(hwnd_, 72), effortSample + ScaleForDpi(hwnd_, 22));
+    cols.nameText = widthOf(mono, LocalizeText(L"Radar score", L"雷达分"));
+    for (const ModelIqScore& score : modelScores_.scores) {
+        cols.nameText = std::max(cols.nameText, widthOf(mono, ModelScoreDisplayName(score.label, score.effort)));
+    }
+    return cols;
+}
+
+int AppBarWindow::ModelScoreTableMinimumClientWidth() const {
+    if (!showModelScores_ || taskbarMode_) {
+        return 0;
+    }
+    const ModelScoreColumnWidths cols = MeasureModelScoreColumnWidths();
+    if (cols.score <= 0) {
+        return 0;
+    }
+    const int accentW = std::max(3, ScaleForDpi(hwnd_, 3));
+    const int cellPad = ScaleForDpi(hwnd_, 6);
+    const int nameGap = ScaleForDpi(hwnd_, 4);
+    const int slack = ScaleForDpi(hwnd_, 4);
+    return RadarScoreTableMinimumClientWidth(
+        cols.nameText + slack,
+        cols.effort,
+        cols.score,
+        cols.time,
+        cols.cost,
+        cols.updated,
+        accentW,
+        cellPad,
+        nameGap,
+        ScaleForDpi(hwnd_, kHorizontalPadding));
+}
+
 int AppBarWindow::GetMinimumWidgetWidth() const {
     if (taskbarMode_) {
         return ScaleForDpi(hwnd_, kTaskbarMinimumWidgetWidth);
     }
+    int width = 0;
     if (surface_ == Surface::Summary) {
-        const int summaryWidth = ScaleForDpi(hwnd_, 420);
+        width = ScaleForDpi(hwnd_, 420);
         if (showModelScores_) {
-            return std::max(summaryWidth, ScaleForDpi(hwnd_, 460));
+            width = std::max(width, ScaleForDpi(hwnd_, 460));
         }
-        return summaryWidth;
+    } else if (showModelScores_) {
+        width = ScaleForDpi(hwnd_, simpleMode_ ? 360 : 460);
+    } else {
+        width = ScaleForDpi(hwnd_, simpleMode_ ? kSimpleMinimumWidgetWidth : kMinimumWidgetWidth);
     }
-    if (showModelScores_) {
-        return ScaleForDpi(hwnd_, simpleMode_ ? 360 : 460);
-    }
-    return ScaleForDpi(hwnd_, simpleMode_ ? kSimpleMinimumWidgetWidth : kMinimumWidgetWidth);
+    return std::max(width, ModelScoreTableMinimumClientWidth());
 }
 
 int AppBarWindow::GetMinimumWidgetHeight(int width) const {
@@ -1305,6 +1397,10 @@ RECT AppBarWindow::ClampRectToDesktop(RECT rect) const {
 }
 
 void AppBarWindow::UpdateWindowBounds(bool useSavedPosition) {
+    if (!taskbarMode_ && showModelScores_ && hwnd_ != nullptr
+        && SUCCEEDED(CreateDeviceIndependentResources())) {
+        EnsureTextFormats();
+    }
     const bool usingPersistedRect = useSavedPosition && hasSavedRect_ && !taskbarMode_;
     RECT rect = usingPersistedRect ? savedRect_ : BuildDefaultRect(GetDesktopClientRect());
     if (!taskbarMode_) {
@@ -2843,15 +2939,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         return std::wstring(buffer);
     };
 
-    auto formatRadarCost = [](const ModelIqScore& score) {
-        if (!score.hasPrice) {
-            return std::wstring(L"--");
-        }
-        wchar_t buffer[32] = {};
-        swprintf_s(buffer, L"$%6.2f", score.averagePriceUsd);
-        return std::wstring(buffer);
-    };
-
     auto formatRadarDuration = [&](const ModelIqScore& score) {
         if (!score.hasDuration) {
             return std::wstring(L"--");
@@ -2887,26 +2974,12 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int accentW = std::max(3, ScaleForDpi(hwnd_, 3));
         IDWriteTextFormat* mono = textFormatMono_ ? textFormatMono_.Get() : textFormatFoot_.Get();
         IDWriteTextFormat* monoBold = textFormatMonoBold_ ? textFormatMonoBold_.Get() : mono;
-        const int scoreColW = std::max(
-            ScaleForDpi(hwnd_, 52),
-            static_cast<int>(std::ceil(measureTextWidth(mono, L"000.0"))) + cellPad * 2);
-        const int timeColW = std::max(
-            ScaleForDpi(hwnd_, 64),
-            static_cast<int>(std::ceil(measureTextWidth(mono, language_ == Language::Chinese ? L"000.0分" : L"000.0m"))) + cellPad * 2);
-        const int costColW = std::max(
-            ScaleForDpi(hwnd_, 68),
-            static_cast<int>(std::ceil(measureTextWidth(mono, L"$000.00"))) + cellPad * 2);
-        const int updatedColW = std::max(
-            ScaleForDpi(hwnd_, 92),
-            static_cast<int>(std::ceil(std::max(
-                measureTextWidth(mono, L"00-00 00:00"),
-                measureTextWidth(mono, LocalizeText(L"Updated", L"更新"))))) + cellPad * 2);
-        const float effortSampleW = std::max(
-            measureTextWidth(monoBold, L"MEDIUM"),
-            measureTextWidth(monoBold, L"XHIGH"));
-        const int effortColW = std::max(
-            ScaleForDpi(hwnd_, 72),
-            static_cast<int>(std::ceil(effortSampleW)) + ScaleForDpi(hwnd_, 22));
+        const ModelScoreColumnWidths columns = MeasureModelScoreColumnWidths();
+        const int scoreColW = columns.score;
+        const int timeColW = columns.time;
+        const int costColW = columns.cost;
+        const int updatedColW = columns.updated;
+        const int effortColW = columns.effort;
         const int rows = GetModelScoresVisibleRowCount();
         const int filterInnerLeft = left + innerPad;
         const int filterInnerRight = right - innerPad;
@@ -2982,16 +3055,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 ? 0
                 : static_cast<int>(found - seriesOrder.begin());
             return SeriesModelColor(index, lightTheme_);
-        };
-        auto modelTitleOf = [](const ModelIqScore& score) {
-            if (!score.effort.empty()) {
-                const std::wstring suffix = L" " + score.effort;
-                if (score.label.size() > suffix.size()
-                    && score.label.compare(score.label.size() - suffix.size(), suffix.size(), suffix) == 0) {
-                    return score.label.substr(0, score.label.size() - suffix.size());
-                }
-            }
-            return score.label;
         };
         auto effortBadgeOf = [](const std::wstring& effort) {
             std::wstring badge = effort;
@@ -3123,8 +3186,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 RECT timeRect = MakeRect(timeLeft, rowTop, costLeft - cellPad, rowTop + rowH);
                 RECT costRect = MakeRect(costLeft, rowTop, updatedLeft - cellPad, rowTop + rowH);
                 RECT updatedRect = MakeRect(updatedLeft, rowTop, tableRight - cellPad, rowTop + rowH);
-                drawTextBlock(mono, modelTitleOf(score), nameRect, seriesColor,
-                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                drawTextBlock(mono, ModelScoreDisplayName(score.label, score.effort), nameRect, seriesColor,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
                 if (!score.effort.empty()) {
                     const std::wstring badge = effortBadgeOf(score.effort);
                     const EffortInk ink = effortInkOf(score.effort);
@@ -3150,7 +3213,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
                 drawTextBlock(mono, formatRadarDuration(score), timeRect, textPrimary,
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
-                drawTextBlock(mono, formatRadarCost(score), costRect, textPrimary,
+                drawTextBlock(mono, FormatRadarCostText(score.hasPrice, score.averagePriceUsd), costRect, textPrimary,
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
                 drawTextBlock(mono, FormatScoreUpdatedAt(score.updatedAt, score.updatedAtDay), updatedRect, textPrimary,
                     DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);

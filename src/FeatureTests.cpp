@@ -258,6 +258,15 @@ void TestModelNameQuery() {
     Expect(FormatScoreUpdatedAt(L"2026-10-18T00:00:00Z", true) == L"10-18", "day bucket hides midnight");
     Expect(FormatScoreUpdatedAt(L"", false) == L"--", "missing update time");
     Expect(FormatScoreUpdatedAt(L"bad", false) == L"--", "bad update time");
+    Expect(FormatRadarCostText(true, 1.25) == L"$1.25", "cost keeps the dollar against the amount");
+    Expect(FormatRadarCostText(true, 10.5) == L"$10.50", "two-digit cost has no gap after the dollar");
+    Expect(FormatRadarCostText(true, 0.11) == L"$0.11", "sub-dollar cost has no gap after the dollar");
+    Expect(FormatRadarCostText(false, 3.0) == L"--", "missing cost stays a dash");
+    Expect(FormatRadarCostText(true, 18.57).find(L"$ ") == std::wstring::npos, "formatted cost contains no space after the dollar");
+    Expect(ModelScoreDisplayName(L"GPT-6.1 Sol ultra", L"ultra") == L"GPT-6.1 Sol", "display name drops the effort word");
+    Expect(ModelScoreDisplayName(L"GPT-5.6 Luna", L"") == L"GPT-5.6 Luna", "display name without effort stays whole");
+    Expect(RadarScoreTableMinimumClientWidth(90, 72, 52, 64, 68, 92, 3, 6, 4, 14) == 90 + 3 + 6 + 4 + 72 + 52 + 64 + 68 + 92 + 2 + 28,
+        "score table width reserves the full model name");
     bool uniqueDark = true;
     bool uniqueLight = true;
     for (int i = 0; i < 40 && (uniqueDark || uniqueLight); ++i) {
