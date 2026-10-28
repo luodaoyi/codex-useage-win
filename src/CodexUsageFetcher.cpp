@@ -10,7 +10,6 @@
 #include <winhttp.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <ctime>
@@ -19,7 +18,6 @@
 #include <map>
 #include <sstream>
 #include <stdexcept>
-#include <thread>
 #include <vector>
 
 #pragma comment(lib, "winhttp.lib")
@@ -120,7 +118,7 @@ bool FillModelIqScoreFromPoint(const jsonlite::Value& pointNode, ModelIqScore* s
         return false;
     }
     const auto scoreValue = scoreNode->AsNumber();
-    if (!scoreValue.has_value()) {
+    if (!scoreValue.has_value() || !std::isfinite(*scoreValue)) {
         return false;
     }
 
@@ -187,251 +185,87 @@ bool FillModelIqScoreFromPoint(const jsonlite::Value& pointNode, ModelIqScore* s
     return !score->label.empty();
 }
 
-std::string UrlQueryEncode(const std::string& value) {
-    static constexpr char kHex[] = "0123456789ABCDEF";
-    std::string encoded;
-    encoded.reserve(value.size());
-    for (unsigned char ch : value) {
-        const bool keep = (ch >= 'a' && ch <= 'z')
-            || (ch >= 'A' && ch <= 'Z')
-            || (ch >= '0' && ch <= '9')
-            || ch == '-' || ch == '_' || ch == '.' || ch == '~';
-        if (keep) {
-            encoded.push_back(static_cast<char>(ch));
+bool FillModelIqScoreFromFourTasks(
+    const jsonlite::Value& row,
+    const jsonlite::Value& weights,
+    const jsonlite::Value* updatedAt,
+    ModelIqScore* score) {
+    jsonlite::Value::Object point;
+    for (const char* key : {"model", "effort"}) {
+        const jsonlite::Value* value = row.Find(key);
+        if (value == nullptr || !value->AsString().has_value() || value->AsString()->empty()) {
+            return false;
+        }
+        point.emplace(key, *value);
+    }
+
+    double total = 0.0;
+    double totalWeight = 0.0;
+    double cost = 0.0;
+    double seconds = 0.0;
+    bool hasCost = true;
+    bool hasTime = true;
+    for (const char* key : {"combined", "pompeii", "pelican", "candy"}) {
+        const jsonlite::Value* task = row.Find(key);
+        const jsonlite::Value* weightNode = weights.Find(key);
+        const auto weight = weightNode != nullptr ? weightNode->AsNumber() : std::nullopt;
+        if (task == nullptr || !weight.has_value() || !std::isfinite(*weight) || *weight < 0.0) {
+            return false;
+        }
+        double reward = 0.0;
+        if (std::string_view(key) == "candy") {
+            const jsonlite::Value* correctNode = task->Find("correct");
+            const auto correct = correctNode != nullptr ? correctNode->AsBool() : std::nullopt;
+            if (!correct.has_value()) {
+                return false;
+            }
+            reward = *correct ? 1.0 : 0.0;
         } else {
-            encoded.push_back('%');
-            encoded.push_back(kHex[ch >> 4]);
-            encoded.push_back(kHex[ch & 0x0F]);
-        }
-    }
-    return encoded;
-}
-
-std::optional<double> ObservedKnownMean(const jsonlite::Value* metric) {
-    if (metric == nullptr || !metric->IsObject()) {
-        return std::nullopt;
-    }
-    const jsonlite::Value* samplesNode = metric->Find("known_samples");
-    const jsonlite::Value* totalNode = metric->Find("known_total");
-    const auto samples = samplesNode != nullptr ? samplesNode->AsNumber() : std::nullopt;
-    const auto total = totalNode != nullptr ? totalNode->AsNumber() : std::nullopt;
-    if (!samples.has_value() || !total.has_value()
-        || !std::isfinite(*samples) || !std::isfinite(*total) || *samples <= 0.0) {
-        return std::nullopt;
-    }
-    return *total / *samples;
-}
-
-struct RadarBenchSelection {
-    std::string model;
-    std::string effort;
-};
-
-const char* RadarComponentKey(RadarMetricKind kind) {
-    return kind == RadarMetricKind::VisualSpatial ? "pompeii" : "deepswe";
-}
-
-bool FillModelIqScoreFromRadarSummary(
-    const jsonlite::Value& node,
-    const std::string& expectedBenchmark,
-    RadarMetricKind kind,
-    ModelIqScore* score,
-    std::wstring* errorMessage) {
-    if (score == nullptr) {
-        return false;
-    }
-
-    const jsonlite::Value* schemaNode = node.Find("schema");
-    const auto schema = schemaNode != nullptr ? schemaNode->AsString() : std::nullopt;
-    if (!schema.has_value() || schema->find("radar-bench-public-summary") != 0) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar summary schema mismatch";
-        }
-        return false;
-    }
-
-    const jsonlite::Value* benchmarkNode = node.Find("benchmark");
-    const auto benchmark = benchmarkNode != nullptr ? benchmarkNode->AsString() : std::nullopt;
-    if (!benchmark.has_value() || std::string(*benchmark) != expectedBenchmark) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar benchmark mismatch";
-        }
-        return false;
-    }
-
-    const char* componentKey = RadarComponentKey(kind);
-    const jsonlite::Value* sources = node.Find("source_scores");
-    const jsonlite::Value* component = sources != nullptr ? sources->Find(componentKey) : nullptr;
-    const jsonlite::Value* scoreNode = component != nullptr ? component->Find("score") : nullptr;
-    if (scoreNode == nullptr || scoreNode->IsNull()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar summary has no component score";
-        }
-        return false;
-    }
-    const auto scoreValue = scoreNode->AsNumber();
-    if (!scoreValue.has_value() || !std::isfinite(*scoreValue)) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar summary score is not a number";
-        }
-        return false;
-    }
-
-    score->score = *scoreValue;
-    std::string modelUtf8;
-    std::string effortUtf8;
-    if (const jsonlite::Value* modelNode = node.Find("model"); modelNode != nullptr) {
-        if (auto model = modelNode->AsString(); model.has_value() && !model->empty()) {
-            modelUtf8 = std::string(*model);
-            score->model = Utf8ToWide(modelUtf8);
-        }
-    }
-    if (const jsonlite::Value* effortNode = node.Find("effort"); effortNode != nullptr) {
-        if (auto effort = effortNode->AsString(); effort.has_value() && !effort->empty()) {
-            effortUtf8 = std::string(*effort);
-            score->effort = Utf8ToWide(effortUtf8);
-        }
-    }
-    if (const jsonlite::Value* coverageNode = component->Find("coverage"); coverageNode != nullptr) {
-        if (auto coverage = coverageNode->AsNumber(); coverage.has_value()) {
-            score->passed = static_cast<int>(*coverage);
-        }
-    }
-    if (const jsonlite::Value* tasksNode = component->Find("required_tasks"); tasksNode != nullptr) {
-        if (auto tasks = tasksNode->AsNumber(); tasks.has_value()) {
-            score->tasks = static_cast<int>(*tasks);
-        }
-    }
-    if (const jsonlite::Value* statistics = node.Find("statistics"); statistics != nullptr) {
-        if (const jsonlite::Value* metrics = statistics->Find("metrics"); metrics != nullptr) {
-            if (const auto price = ObservedKnownMean(metrics->Find("api_equivalent_usd")); price.has_value()) {
-                score->averagePriceUsd = *price;
-                score->hasPrice = true;
+            const bool pompeii = std::string_view(key) == "pompeii";
+            const jsonlite::Value* value = task->Find(pompeii ? "reward" : "score");
+            const auto number = value != nullptr ? value->AsNumber() : std::nullopt;
+            if (!number.has_value() || !std::isfinite(*number)) {
+                return false;
             }
-            if (const auto elapsedMs = ObservedKnownMean(metrics->Find("elapsed_ms"));
-                elapsedMs.has_value() && *elapsedMs >= 0.0) {
-                score->averageMinutes = *elapsedMs / 60000.0;
-                score->hasDuration = true;
+            reward = *number / (pompeii ? 1.0 : 100.0);
+            if (reward < 0.0 || reward > 1.0) {
+                return false;
             }
         }
-    }
-    if (const jsonlite::Value* detail = node.Find("detail_metrics"); detail != nullptr) {
-        const jsonlite::Value* graded = detail->Find("latest_graded_at");
-        const auto gradedText = graded != nullptr ? graded->AsString() : std::nullopt;
-        if (gradedText.has_value() && !gradedText->empty()) {
-            score->updatedAt = Utf8ToWide(std::string(*gradedText));
-            score->updatedAtDay = false;
+        total += reward * *weight;
+        totalWeight += *weight;
+        const jsonlite::Value* costNode = task->Find("cost_usd");
+        const jsonlite::Value* costKindNode = task->Find("cost_kind");
+        const auto taskCost = costNode != nullptr ? costNode->AsNumber() : std::nullopt;
+        const auto costKind = costKindNode != nullptr ? costKindNode->AsString() : std::nullopt;
+        if (taskCost.has_value() && std::isfinite(*taskCost) && *taskCost >= 0.0
+            && costKind == "api_equivalent_estimate") {
+            cost += *taskCost;
+        } else {
+            hasCost = false;
+        }
+        const jsonlite::Value* timeNode = task->Find("model_elapsed_seconds");
+        const auto taskTime = timeNode != nullptr ? timeNode->AsNumber() : std::nullopt;
+        if (taskTime.has_value() && std::isfinite(*taskTime) && *taskTime >= 0.0) {
+            seconds += *taskTime;
+        } else {
+            hasTime = false;
         }
     }
-    if (score->updatedAt.empty()) {
-    if (const jsonlite::Value* history = node.Find("history"); history != nullptr && history->IsObject()) {
-        const jsonlite::Value* bucket = history->Find("updated_bucket");
-        const auto bucketText = bucket != nullptr ? bucket->AsString() : std::nullopt;
-        if (bucketText.has_value() && !bucketText->empty()) {
-            score->updatedAt = Utf8ToWide(std::string(*bucketText));
-            score->updatedAtDay = true;
-        } else if (const jsonlite::Value* points = history->Find("points"); points != nullptr) {
-            if (const jsonlite::Value::Array* days = points->AsArray(); days != nullptr && !days->empty()) {
-                const jsonlite::Value* at = days->back().Find("at");
-                const auto atText = at != nullptr ? at->AsString() : std::nullopt;
-                if (atText.has_value() && !atText->empty()) {
-                    score->updatedAt = Utf8ToWide(std::string(*atText));
-                    score->updatedAtDay = true;
-                }
-            }
-        }
-    }
-    }
-    if (score->score >= 100.0) {
-        score->status = L"green";
-    } else if (score->score >= 85.0) {
-        score->status = L"yellow";
-    } else {
-        score->status = L"red";
-    }
-    score->label = FormatRadarModelLabel(modelUtf8, effortUtf8);
-    const std::string familyKey = ExtractRadarFamilyKey(modelUtf8);
-    score->familyKey = Utf8ToWide(familyKey);
-    score->familyLabel = FormatRadarModelLabel(familyKey, "");
-    if (score->label.empty()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar summary missing model";
-        }
+    if (std::abs(totalWeight - 150.0) > 1e-9) {
         return false;
     }
-    return true;
-}
-
-std::optional<std::vector<RadarBenchSelection>> ParseRadarBenchBinding(
-    const std::string& jsonText,
-    std::string* benchmark,
-    std::wstring* errorMessage) {
-    if (const size_t firstChar = jsonText.find_first_not_of(" \t\r\n");
-        firstChar != std::string::npos && jsonText[firstChar] == '<') {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar returned HTML instead of JSON (endpoint likely removed)";
-        }
-        return std::nullopt;
+    point.emplace("iq", jsonlite::Value(total));
+    if (hasCost) {
+        point.emplace("average_price_usd", jsonlite::Value(cost));
     }
-
-    jsonlite::Parser parser(jsonText);
-    std::optional<jsonlite::Value> root = parser.Parse();
-    if (!root.has_value()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar binding JSON parse failed: " + Utf8ToWide(parser.Error());
-        }
-        return std::nullopt;
+    if (hasTime) {
+        point.emplace("average_minutes", jsonlite::Value(seconds / 60.0));
     }
-
-    const auto enabled = root->Find("enabled") != nullptr ? root->Find("enabled")->AsBool() : std::nullopt;
-    const auto verified = root->Find("production_read_verified") != nullptr
-        ? root->Find("production_read_verified")->AsBool()
-        : std::nullopt;
-    if (!enabled.has_value() || !*enabled || !verified.has_value() || !*verified) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar binding is not enabled";
-        }
-        return std::nullopt;
+    if (updatedAt != nullptr) {
+        point.emplace("latest_graded_at", *updatedAt);
     }
-
-    const auto benchmarkText = root->Find("benchmark") != nullptr
-        ? root->Find("benchmark")->AsString()
-        : std::nullopt;
-    if (!benchmarkText.has_value() || benchmarkText->empty()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar binding missing benchmark";
-        }
-        return std::nullopt;
-    }
-    if (benchmark != nullptr) {
-        *benchmark = std::string(*benchmarkText);
-    }
-
-    const jsonlite::Value* effortsNode = root->Find("model_efforts");
-    const jsonlite::Value::Array* efforts = effortsNode != nullptr ? effortsNode->AsArray() : nullptr;
-    if (efforts == nullptr) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar binding missing model_efforts";
-        }
-        return std::nullopt;
-    }
-
-    std::vector<RadarBenchSelection> selections;
-    for (const jsonlite::Value& item : *efforts) {
-        const auto model = item.Find("model") != nullptr ? item.Find("model")->AsString() : std::nullopt;
-        const auto effort = item.Find("effort") != nullptr ? item.Find("effort")->AsString() : std::nullopt;
-        if (!model.has_value() || model->empty() || !effort.has_value() || effort->empty()) {
-            continue;
-        }
-        selections.push_back(RadarBenchSelection{std::string(*model), std::string(*effort)});
-    }
-    if (selections.empty()) {
-        if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar binding has no model_efforts";
-        }
-        return std::nullopt;
-    }
-    return selections;
+    return FillModelIqScoreFromPoint(jsonlite::Value(std::move(point)), score);
 }
 
 std::wstring ModelIqDedupKey(const ModelIqScore& score) {
@@ -1409,103 +1243,18 @@ ReleaseVersionInfo CodexUsageFetcher::FetchLatestRelease() const {
 ModelIqSnapshot CodexUsageFetcher::FetchModelIq(RadarMetricKind kind) const {
     ModelIqSnapshot snapshot;
     snapshot.kind = kind;
-
-    std::wstring bindingError;
-    const std::optional<std::string> bindingJson = HttpGetCodexRadarMetricsJson(
-        L"codexradar.com",
-        L"/data/radar-bench-binding.json",
-        &bindingError);
-    if (!bindingJson.has_value()) {
-        snapshot.errorMessage = bindingError.empty() ? L"CodexRadar binding request failed" : bindingError;
+    std::wstring error;
+    const auto json = HttpGetCodexRadarMetricsJson(
+        L"codexradar.com", L"/data/codex-four-task-results.json", &error);
+    if (!json.has_value()) {
+        snapshot.errorMessage = error;
         return snapshot;
     }
-    std::string benchmark;
-    const std::optional<std::vector<RadarBenchSelection>> selections =
-        ParseRadarBenchBinding(*bindingJson, &benchmark, &bindingError);
-    if (!selections.has_value()) {
-        snapshot.errorMessage = bindingError.empty() ? L"CodexRadar binding is not usable" : bindingError;
-        return snapshot;
+    snapshot = ParseModelIqJson(*json, &error);
+    snapshot.kind = kind;
+    if (!snapshot.success) {
+        snapshot.errorMessage = error;
     }
-
-    std::vector<std::optional<std::string>> bodies(selections->size());
-    std::atomic<size_t> cursor{0};
-    const size_t workerCount = std::min<size_t>(3, selections->size());
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount);
-    for (size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
-        workers.emplace_back([&]() {
-            for (;;) {
-                const size_t index = cursor.fetch_add(1);
-                if (index >= selections->size()) {
-                    return;
-                }
-                const RadarBenchSelection& selection = (*selections)[index];
-                const std::wstring path = Utf8ToWide(
-                    "/api/radar-bench-score?model=" + UrlQueryEncode(selection.model)
-                    + "&effort=" + UrlQueryEncode(selection.effort)
-                    + "&view=summary&selection=user-selected-v1");
-                std::wstring cellError;
-                bodies[index] = HttpExchange(
-                    L"CodexUsageBar/0.1",
-                    L"codexradar.com",
-                    path,
-                    L"GET",
-                    {
-                        L"Accept: application/json",
-                        L"Cache-Control: no-cache",
-                        L"User-Agent: CodexUsageBar",
-                        L"X-Radar-Bench-Selection: user-selected-v1",
-                    },
-                    nullptr,
-                    &cellError,
-                    nullptr);
-            }
-        });
-    }
-    for (std::thread& worker : workers) {
-        worker.join();
-    }
-
-    for (size_t index = 0; index < bodies.size(); ++index) {
-        if (!bodies[index].has_value()) {
-            continue;
-        }
-        jsonlite::Parser parser(*bodies[index]);
-        const std::optional<jsonlite::Value> root = parser.Parse();
-        if (!root.has_value()) {
-            continue;
-        }
-        ModelIqScore score;
-        std::wstring parseError;
-        if (!FillModelIqScoreFromRadarSummary(*root, benchmark, kind, &score, &parseError)) {
-            continue;
-        }
-        const RadarBenchSelection& selection = (*selections)[index];
-        if (score.model != Utf8ToWide(selection.model) || score.effort != Utf8ToWide(selection.effort)) {
-            continue;
-        }
-        const std::wstring key = ModelIqDedupKey(score);
-        const bool duplicate = std::any_of(snapshot.scores.begin(), snapshot.scores.end(),
-            [&](const ModelIqScore& existing) { return ModelIqDedupKey(existing) == key; });
-        if (key.empty() || duplicate) {
-            continue;
-        }
-        snapshot.scores.push_back(std::move(score));
-    }
-
-    if (snapshot.scores.empty()) {
-        snapshot.errorMessage = L"CodexRadar returned no component scores";
-        return snapshot;
-    }
-    std::sort(snapshot.scores.begin(), snapshot.scores.end(),
-        [](const ModelIqScore& lhs, const ModelIqScore& rhs) {
-            if (lhs.score != rhs.score) {
-                return lhs.score > rhs.score;
-            }
-            return lhs.label < rhs.label;
-        });
-    snapshot.success = true;
-    snapshot.benchmarkId = Utf8ToWide(benchmark);
     return snapshot;
 }
 
@@ -1966,9 +1715,8 @@ std::optional<std::string> CodexUsageFetcher::HttpGetCodexRadarMetricsJson(
     const wchar_t* path,
     std::wstring* errorMessage) const {
     return HttpGetJson(
-        L"CodexUsageBar/0.1",
-        host,
-        path != nullptr ? path : L"/data/radar-bench-binding.json",
+        L"CodexUsageBar/0.1", host,
+        path != nullptr ? path : L"/data/codex-four-task-results.json",
         {
             L"Accept: application/json",
             L"Cache-Control: no-cache",
@@ -2237,22 +1985,35 @@ ModelIqSnapshot CodexUsageFetcher::ParseModelIqJson(const std::string& jsonText,
         return snapshot;
     }
 
-    if (const jsonlite::Value* updatedAt = root->Find("source_updated_at"); updatedAt != nullptr) {
-        if (auto text = updatedAt->AsString(); text.has_value()) {
+    const jsonlite::Value* schemaNode = root->Find("schema");
+    const auto schema = schemaNode != nullptr ? schemaNode->AsString() : std::nullopt;
+    const jsonlite::Value* weights = root->Find("task_weights");
+    const jsonlite::Value* protocolNode = root->Find("protocol");
+    const jsonlite::Value* maxNode = root->Find("score_max");
+    if (schema != "codex-four-task-results/1"
+        || protocolNode == nullptr || protocolNode->AsString() != "codex-four-weighted-150-v2"
+        || maxNode == nullptr || maxNode->AsNumber() != 150.0 || weights == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = L"CodexRadar four-task scoring contract mismatch";
+        }
+        return snapshot;
+    }
+    if (const jsonlite::Value* at = root->Find("score_snapshot_at"); at != nullptr) {
+        if (const auto text = at->AsString(); text.has_value()) {
             snapshot.updatedAt = Utf8ToWide(std::string(*text));
         }
     }
-    if (const jsonlite::Value* benchmarkId = root->Find("benchmark_id"); benchmarkId != nullptr) {
-        if (auto text = benchmarkId->AsString(); text.has_value()) {
+    if (const jsonlite::Value* round = root->Find("round_id"); round != nullptr) {
+        if (const auto text = round->AsString(); text.has_value()) {
             snapshot.benchmarkId = Utf8ToWide(std::string(*text));
         }
     }
 
-    const jsonlite::Value* pointsNode = root->Find("points");
+    const jsonlite::Value* pointsNode = root->Find("rows");
     const jsonlite::Value::Array* points = pointsNode != nullptr ? pointsNode->AsArray() : nullptr;
     if (points == nullptr) {
         if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar payload missing points";
+            *errorMessage = L"CodexRadar payload missing rows";
         }
         return snapshot;
     }
@@ -2263,7 +2024,8 @@ ModelIqSnapshot CodexUsageFetcher::ParseModelIqJson(const std::string& jsonText,
             continue;
         }
         ModelIqScore score;
-        if (!FillModelIqScoreFromPoint(point, &score)) {
+        if (!FillModelIqScoreFromFourTasks(point, *weights, root->Find("score_snapshot_at"), &score)
+            || score.model.find(L"gpt-") != 0) {
             continue;
         }
         const std::wstring key = ModelIqDedupKey(score);
@@ -2287,7 +2049,7 @@ ModelIqSnapshot CodexUsageFetcher::ParseModelIqJson(const std::string& jsonText,
 
     if (snapshot.scores.empty()) {
         if (errorMessage != nullptr) {
-            *errorMessage = L"CodexRadar points has no scores";
+            *errorMessage = L"CodexRadar rows have no GPT scores";
         }
         return snapshot;
     }

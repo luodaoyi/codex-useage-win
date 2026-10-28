@@ -47,9 +47,8 @@
   - 简单模式：只显示 `5小时剩余`、`本周剩余` 和状态标签，适合更紧凑的小卡片
   - 任务栏模式：更小的剩余额度小条，自动贴近当前显示器的任务栏边缘，并固定贴边显示
 - 智能评分排名（默认关闭）：
-  - 雷达分：读取 `https://codexradar.com/data/radar-bench-binding.json`，再按绑定档位请求 `https://codexradar.com/api/radar-bench-score`，软件工程分取 `source_scores.deepswe`。只显示绑定里的 GPT。无分数的档位不进表。拉取失败后 30 秒再试，成功后每 5 分钟刷新。底部「数据来自 Codex 雷达」点击打开 `https://codexradar.com/`
-  - 按分数倒序，显示分数、时间和金额
-  - 只列出 RadarBench 绑定里的 GPT。名称框仍可过滤，不再按模型族选择
+  - 雷达分：GPT 读取 `https://codexradar.com/data/codex-four-task-results.json`，按发布的权重计算四项总分（满分 150），费用与耗时为四项合计，更新列显示成绩快照时间。拉取失败后 30 秒再试，成功后每 5 分钟刷新。底部来源链接打开 `https://codexradar.com/`
+  - 按分数倒序，只显示 GPT，保留名称输入框过滤，不显示模型选择按钮
   - 每页 10 条，支持上一页 / 下一页
 - 桌面浮层挂件，可拖动、可缩放
 - 根据当前进度状态切换颜色

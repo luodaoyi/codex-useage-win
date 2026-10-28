@@ -3228,7 +3228,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         RECT attrRect = MakeRect(box.left + innerPad, box.bottom - pad - footH,
             box.right - innerPad, box.bottom - pad);
         modelScoresSourceRect_ = attrRect;
-        const std::wstring sourceText = LocalizeText(L"Data: Codex Radar", L"数据来自 Codex 雷达");
+        const std::wstring sourceText = LocalizeText(L"Data: Codex Radar · GPT /150", L"数据来自 Codex 雷达 · GPT /150");
         const COLORREF linkColor = lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163);
         drawTextBlock(textFormatFoot_.Get(), sourceText, attrRect, linkColor,
             DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);

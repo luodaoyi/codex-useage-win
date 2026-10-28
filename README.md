@@ -47,9 +47,8 @@ The widget reads usage limits from the current Codex account and displays them i
   - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
   - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
 - Smart ranking (off by default):
-  - Radar score: read `https://codexradar.com/data/radar-bench-binding.json`, then request each bound effort from `https://codexradar.com/api/radar-bench-score`. The software-engineering value is `source_scores.deepswe`. Only GPT models in the binding are shown. Cells without a numeric score are omitted. A failed fetch retries after 30 seconds; a successful fetch refreshes every 5 minutes. The "Data: Codex Radar" line opens `https://codexradar.com/`
-  - Sorted by score, with time and cost columns
-  - Lists only the GPT models in the RadarBench binding. The name box still filters; there is no model-family selector
+  - Radar score: GPT reads `https://codexradar.com/data/codex-four-task-results.json` and uses the published weights for the four-task total out of 150. Cost and time are totals across all four tasks; the update column shows the score snapshot time. A failed fetch retries after 30 seconds; a successful fetch refreshes every 5 minutes. The source link opens `https://codexradar.com/`
+  - Only GPT models are shown, sorted by score. The name box still filters; model selection buttons are hidden
   - 10 rows per page with Prev / Next
 - Desktop overlay widget with drag and resize support
 - Dynamic coloring based on current pace
