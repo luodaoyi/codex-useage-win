@@ -268,6 +268,7 @@ void AppBarWindow::PasteImport(const std::wstring& provider) {
     activeAuthId_ = imported.id;
     SaveActiveAuth();
     SaveFeatureSettings();
+    FitWindowToContent();
     RequestRefresh(true);
 }
 
@@ -358,6 +359,7 @@ void AppBarWindow::DeleteAccountById(const std::wstring& id) {
         grok_ = {};
         RequestRefresh(true);
     }
+    NormalizeSingleAccountProvider();
     FitWindowToContent();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

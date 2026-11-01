@@ -347,6 +347,7 @@ bool AppBarWindow::Create() {
             break;
         }
     }
+    NormalizeSingleAccountProvider();
     hwnd_ = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         kWindowClassName,
@@ -601,6 +602,7 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 snapshot_ = {};
                 grok_ = {};
                 resetCreditActionMessage_.clear();
+                FitWindowToContent();
                 RequestRefresh(true);
             } else {
                 resetCreditActionMessage_ = result != nullptr ? result->error : L"browser login failed";
@@ -842,12 +844,29 @@ int AppBarWindow::GetMinimumWidgetWidth() const {
     return std::max(width, ModelScoreTableMinimumClientWidth());
 }
 
+bool AppBarWindow::HasMultipleAccounts() const {
+    return accounts_.List(L"").size() > 1;
+}
+
+void AppBarWindow::NormalizeSingleAccountProvider() {
+    const std::vector<AccountEntry> accounts = accounts_.List(L"");
+    if (accounts.size() != 1 || accounts.front().provider.empty()) {
+        return;
+    }
+    const std::wstring& sole = accounts.front().provider;
+    if (provider_ != sole) {
+        provider_ = sole;
+        SaveFeatureSettings();
+    }
+}
+
 int AppBarWindow::GetMinimumWidgetHeight(int width) const {
     if (taskbarMode_) {
         return CalculateTaskbarWidgetHeight(hwnd_);
     }
-    const int chrome = ScaleForDpi(hwnd_, surface_ == Surface::Summary ? 44 : 78);
-    const int dropExtra = surface_ != Surface::Summary && accountDropOpen_
+    const bool compactChrome = surface_ == Surface::Summary || !HasMultipleAccounts();
+    const int chrome = ScaleForDpi(hwnd_, compactChrome ? 44 : 78);
+    const int dropExtra = !compactChrome && accountDropOpen_
         ? ScaleForDpi(hwnd_, 8 + 32 * std::max(1, static_cast<int>(accounts_.List(provider_).size())))
         : 0;
     if (surface_ == Surface::Summary) {
@@ -2442,6 +2461,7 @@ void AppBarWindow::ImportAccount() {
     resetCreditActionMessage_.clear();
     snapshot_ = {};
     snapshot_.errorMessage = LocalizeText(L"Account imported. Loading...", L"账号已导入，正在读取...");
+    FitWindowToContent();
     InvalidateRect(hwnd_, nullptr, FALSE);
     RequestRefresh(true);
 }
@@ -3319,7 +3339,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     if (!taskbarMode_) {
         fillRect(clientRect, background);
         drawRectBorder(clientRect, border);
-        const int chromeH = ScaleForDpi(hwnd_, surface_ == Surface::Summary ? 44 : 78);
+        const bool showProviderTabs = HasMultipleAccounts();
+        const int chromeH = ScaleForDpi(hwnd_, surface_ == Surface::Summary || !showProviderTabs ? 44 : 78);
         const int rowH = ScaleForDpi(hwnd_, 28);
         const int gap = ScaleForDpi(hwnd_, 6);
         const int left = clientRect.left + ScaleForDpi(hwnd_, 14);
@@ -3339,10 +3360,12 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
             addHit(rect, command);
         };
-        RECT codexTab = MakeRect(left, row1, left + ScaleForDpi(hwnd_, 70), row1 + rowH);
-        RECT grokTab = MakeRect(codexTab.right + gap, row1, codexTab.right + gap + ScaleForDpi(hwnd_, 62), row1 + rowH);
-        chip(codexTab, L"Codex", provider_ == L"codex" && surface_ == Surface::Usage, kCommandProviderCodex);
-        chip(grokTab, L"Grok", provider_ == L"grok" && surface_ == Surface::Usage, kCommandProviderGrok);
+        if (showProviderTabs) {
+            RECT codexTab = MakeRect(left, row1, left + ScaleForDpi(hwnd_, 70), row1 + rowH);
+            RECT grokTab = MakeRect(codexTab.right + gap, row1, codexTab.right + gap + ScaleForDpi(hwnd_, 62), row1 + rowH);
+            chip(codexTab, L"Codex", provider_ == L"codex" && surface_ == Surface::Usage, kCommandProviderCodex);
+            chip(grokTab, L"Grok", provider_ == L"grok" && surface_ == Surface::Usage, kCommandProviderGrok);
+        }
         const std::wstring summaryLabel = LocalizeText(L"Summary", L"汇总");
         const std::wstring settingsLabel = surface_ == Surface::Settings
             ? LocalizeText(L"Done", L"完成")
@@ -3370,8 +3393,9 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 break;
             }
         }
-        if (surface_ == Surface::Summary) {
+        if (surface_ == Surface::Summary || !showProviderTabs) {
             accountDropRect_ = {};
+            accountDropOpen_ = false;
         } else {
         accountDropRect_ = MakeRect(left, row2, right, row2 + rowH);
         fillRect(accountDropRect_, accountDropOpen_

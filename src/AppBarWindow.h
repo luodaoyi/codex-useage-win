@@ -152,6 +152,10 @@ private:
     bool IsActiveAuth(const AccountEntry& account) const;
     int ExtraFeatureHeight() const;
     int GrokUsageBodyHeight() const;
+    // One account (or none) needs no provider tabs and no account dropdown.
+    bool HasMultipleAccounts() const;
+    // A lone account owns the whole widget: keep the provider pinned to it.
+    void NormalizeSingleAccountProvider();
     void ReloadAccounts();
     void PasteImport(const std::wstring& provider);
     void RenameActiveAccount();
