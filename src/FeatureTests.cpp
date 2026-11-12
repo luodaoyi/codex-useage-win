@@ -258,7 +258,16 @@ void TestModelNameQuery() {
     Expect(ModelNameMatchesQuery(L"glm-5.3-flash", L"GLM-5.3 Flash max", L"max", L"flash luna"), "space means or, flash side");
     Expect(!ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L"flash luna"), "space or still excludes sol");
     Expect(!ModelNameMatchesQuery(L"gpt-6-sol", L"GPT-6 Sol ultra", L"ultra", L"ultra"), "effort word is not the model name");
-    Expect(FormatScoreUpdatedAt(L"2026-09-29T15:28:15+08:00", false) == L"09-29 15:28", "precise grade time keeps clock");
+    SYSTEMTIME utcGrade = {2026, 9, 0, 29, 7, 28, 15, 0};
+    SYSTEMTIME localGrade = {};
+    Expect(SystemTimeToTzSpecificLocalTime(nullptr, &utcGrade, &localGrade) != 0, "convert grade time to system timezone");
+    wchar_t localGradeText[32] = {};
+    swprintf_s(localGradeText, L"%02u-%02u %02u:%02u", localGrade.wMonth, localGrade.wDay, localGrade.wHour, localGrade.wMinute);
+    Expect(FormatScoreUpdatedAt(L"2026-09-29T15:28:15+08:00", false) == localGradeText, "precise grade time uses local timezone");
+    Expect(FormatScoreUpdatedAt(L"2026-09-29T07:28:15Z", false) == localGradeText, "UTC grade time uses local timezone");
+    Expect(FormatScoreUpdatedAt(L"2026-09-29T07:28:15.123Z", false) == localGradeText, "fractional seconds preserve local grade time");
+    Expect(FormatScoreUpdatedAt(L"2026-09-29T07:28:15-00:00", false) == localGradeText, "negative zero offset preserves grade time");
+    Expect(FormatScoreUpdatedAt(L"2026-09-28T23:28:15-08:00", false) == localGradeText, "offset conversion crosses date boundary");
     Expect(FormatScoreUpdatedAt(L"2026-10-18T00:00:00Z", true) == L"10-18", "day bucket hides midnight");
     Expect(FormatScoreUpdatedAt(L"", false) == L"--", "missing update time");
     Expect(FormatScoreUpdatedAt(L"bad", false) == L"--", "bad update time");

@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -173,10 +174,39 @@ inline std::wstring FormatScoreUpdatedAt(const std::wstring& iso, bool dayOnly) 
     if (iso.size() < 10 || iso[4] != L'-' || iso[7] != L'-') {
         return L"--";
     }
-    std::wstring text = iso.substr(5, 5);
-    if (!dayOnly && iso.size() >= 16 && (iso[10] == L'T' || iso[10] == L't')) {
-        text += L' ';
-        text += iso.substr(11, 5);
+    if (dayOnly || iso.size() == 10) {
+        return iso.substr(5, 5);
     }
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (swscanf_s(iso.c_str(), L"%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second) != 6) {
+        return L"--";
+    }
+    std::tm parts = {};
+    parts.tm_year = year - 1900;
+    parts.tm_mon = month - 1;
+    parts.tm_mday = day;
+    parts.tm_hour = hour;
+    parts.tm_min = minute;
+    parts.tm_sec = second;
+    time_t utc = _mkgmtime(&parts);
+    if (utc == static_cast<time_t>(-1)) {
+        return L"--";
+    }
+    const size_t sign = iso.find_first_of(L"+-", 19);
+    if (sign != std::wstring::npos) {
+        int offsetHour = 0, offsetMinute = 0;
+        if (swscanf_s(iso.c_str() + sign + 1, L"%2d:%2d", &offsetHour, &offsetMinute) != 2
+            || offsetHour > 23 || offsetMinute > 59) {
+            return L"--";
+        }
+        const int offsetSeconds = (offsetHour * 60 + offsetMinute) * 60;
+        utc -= iso[sign] == L'-' ? -offsetSeconds : offsetSeconds;
+    }
+    std::tm local = {};
+    if (localtime_s(&local, &utc) != 0) {
+        return L"--";
+    }
+    wchar_t text[32] = {};
+    wcsftime(text, _countof(text), L"%m-%d %H:%M", &local);
     return text;
 }
