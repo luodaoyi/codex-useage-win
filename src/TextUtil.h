@@ -150,6 +150,18 @@ inline bool ModelNameMatchesQuery(
 // Distinct RGB for each model index. The old palette wrapped every 12 models.
 inline COLORREF SeriesModelColor(int index, bool lightTheme) {
     const int n = index < 0 ? 0 : index;
+    // Use distinct hues for the eight benchmark models; formula colors can look alike.
+    static const COLORREF lightColors[] = {
+        RGB(0, 70, 200), RGB(195, 105, 0), RGB(105, 45, 200), RGB(0, 115, 35),
+        RGB(180, 20, 135), RGB(0, 125, 130), RGB(105, 130, 0), RGB(190, 25, 40),
+    };
+    static const COLORREF darkColors[] = {
+        RGB(90, 140, 255), RGB(255, 170, 40), RGB(174, 140, 255), RGB(90, 220, 120),
+        RGB(255, 125, 200), RGB(60, 220, 240), RGB(220, 235, 110), RGB(255, 95, 95),
+    };
+    if (n < 8) {
+        return lightTheme ? lightColors[n] : darkColors[n];
+    }
     if (lightTheme) {
         return RGB(20 + ((n * 67) % 200), 25 + ((n * 41) % 170), 30 + ((n * 97) % 190));
     }

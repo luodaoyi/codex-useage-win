@@ -47,7 +47,7 @@ The widget reads usage limits from the current Codex account and displays them i
   - Simple mode: compact `5h left` and `Week left` cards with remaining percentages and status text
   - Taskbar mode: a smaller remaining-quota strip that snaps near the current monitor's taskbar edge and stays docked there
 - Smart ranking (off by default):
-  - Radar score: GPT reads `https://codexradar.com/data/codex-four-task-results.json` and uses the published weights for the four-task total out of 150. Cost and time are totals across all four tasks; the update column shows the score snapshot time. A failed fetch retries after 30 seconds; a successful fetch refreshes every 5 minutes. The source link opens `https://codexradar.com/`
+  - Radar score: GPT reads `https://codexradar.com/data/codex-four-task-results.json` and uses the published weights for the four-task total out of 150. Cost and time are totals across all four tasks; the update column shows the score snapshot time. A failed fetch retries after 30 seconds; a successful fetch refreshes every 5 minutes. The panel assigns distinct colors to models and has no source link
   - Only GPT models are shown, sorted by score. The name box still filters; model selection buttons are hidden
   - 10 rows per page with Prev / Next
 - Desktop overlay widget with drag and resize support

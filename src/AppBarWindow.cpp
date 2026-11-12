@@ -508,11 +508,6 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             GetCursorPos(&screenPoint);
             POINT clientPoint = screenPoint;
             ScreenToClient(hwnd_, &clientPoint);
-            if (modelScoresSourceRect_.right > modelScoresSourceRect_.left
-                && PtInRect(&modelScoresSourceRect_, clientPoint)) {
-                SetCursor(LoadCursorW(nullptr, IDC_HAND));
-                return TRUE;
-            }
             switch (HitTestDragMode(clientPoint)) {
                 case DragMode::ResizeRight:
                     SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
@@ -1045,9 +1040,8 @@ int AppBarWindow::GetModelScoresPanelHeight() const {
     const int rowH = ScaleForDpi(hwnd_, 22);
     const int midGap = ScaleForDpi(hwnd_, 4);
     const int pagerH = ScaleForDpi(hwnd_, 18);
-    const int footH = ScaleForDpi(hwnd_, 14);
     const int queryH = ModelScoreQueryRowHeight();
-    return gap + pad + queryH + midGap + rowH * (rows + 1) + midGap + pagerH + footH + pad;
+    return gap + pad + queryH + midGap + rowH * (rows + 1) + midGap + pagerH + pad;
 }
 
 bool AppBarWindow::IsModelScoreFamilySelected(const std::wstring& familyKey) const {
@@ -2329,11 +2323,6 @@ bool AppBarWindow::TryHandleActionButtonClick(POINT clientPoint) {
             }
             return true;
         }
-        if (modelScoresSourceRect_.right > modelScoresSourceRect_.left
-            && PtInRect(&modelScoresSourceRect_, clientPoint)) {
-            ShellExecuteW(hwnd_, L"open", L"https://codexradar.com/", nullptr, nullptr, SW_SHOWNORMAL);
-            return true;
-        }
     }
 
     if (resetLinkRect_.right > resetLinkRect_.left && PtInRect(&resetLinkRect_, clientPoint) && !resetStatus_.url.empty()) {
@@ -2803,7 +2792,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     modelScoresPrevRect_ = {};
     modelScoreQueryPlaced_ = false;
     modelScoresNextRect_ = {};
-    modelScoresSourceRect_ = {};
     modelScoreFilterChips_.clear();
     const PaceInfo pace = BuildPaceInfo(snapshot_);
     const int padX = ScaleForDpi(hwnd_, kHorizontalPadding);
@@ -2954,7 +2942,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int gap = ScaleForDpi(hwnd_, 6);
         const int pad = ScaleForDpi(hwnd_, 4);
         const int rowH = ScaleForDpi(hwnd_, 22);
-        const int footH = ScaleForDpi(hwnd_, 14);
         const int innerPad = ScaleForDpi(hwnd_, 8);
         const int cellPad = ScaleForDpi(hwnd_, 6);
         const int midGap = ScaleForDpi(hwnd_, 4);
@@ -2973,7 +2960,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int filterInnerRight = right - innerPad;
         const int queryH = ModelScoreQueryRowHeight();
         const int tableH = rowH * (rows + 1);
-        const int boxH = pad + queryH + midGap + tableH + midGap + pagerH + footH + pad;
+        const int boxH = pad + queryH + midGap + tableH + midGap + pagerH + pad;
         RECT box = MakeRect(left, top + gap, right, top + gap + boxH);
         const COLORREF cardBg = lightTheme_ ? RGB(248, 249, 248) : RGB(34, 39, 36);
         const COLORREF headerBg = lightTheme_ ? RGB(236, 240, 237) : RGB(44, 52, 47);
@@ -3219,7 +3206,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         drawRectBorder(box, border);
 
         const int pageCount = GetModelScoresPageCount();
-        const int pagerTop = box.bottom - pad - footH - pagerH;
+        const int pagerTop = box.bottom - pad - pagerH;
         const int pagerBtnW = ScaleForDpi(hwnd_, 44);
         RECT prevRect = MakeRect(box.left + innerPad, pagerTop,
             box.left + innerPad + pagerBtnW, pagerTop + pagerH);
@@ -3245,16 +3232,6 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         drawTextBlock(textFormatFoot_.Get(), pageText, pageRect, textSecondary,
             DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
 
-        RECT attrRect = MakeRect(box.left + innerPad, box.bottom - pad - footH,
-            box.right - innerPad, box.bottom - pad);
-        modelScoresSourceRect_ = attrRect;
-        const std::wstring sourceText = LocalizeText(L"Data: Codex Radar · GPT /150", L"数据来自 Codex 雷达 · GPT /150");
-        const COLORREF linkColor = lightTheme_ ? RGB(21, 148, 78) : RGB(118, 216, 163);
-        drawTextBlock(textFormatFoot_.Get(), sourceText, attrRect, linkColor,
-            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
-        const int linkWidth = static_cast<int>(std::ceil(measureTextWidth(textFormatFoot_.Get(), sourceText)));
-        const int underlineTop = attrRect.bottom - std::max(1, ScaleForDpi(hwnd_, 2));
-        fillRect(MakeRect(attrRect.left, underlineTop, attrRect.left + linkWidth, underlineTop + 1), linkColor);
         return gap + boxH;
     };
 

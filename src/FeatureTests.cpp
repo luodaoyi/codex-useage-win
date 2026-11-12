@@ -142,10 +142,14 @@ void TestSessions() {
     const std::wstring root = MakeTempRoot();
     const std::wstring logs = root + L"\\logs";
     const std::wstring index = root + L"\\index";
+    SYSTEMTIME now = {};
+    GetLocalTime(&now);
+    const std::string day = std::to_string(now.wYear) + (now.wMonth < 10 ? "-0" : "-")
+        + std::to_string(now.wMonth) + "-01";
     WriteBytes(logs + L"\\a.jsonl",
-        "{\"timestamp\":\"2026-09-24T01:00:00Z\",\"payload\":{\"model\":\"priced-test\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":0,\"output_tokens\":10}}}}\n");
+        "{\"timestamp\":\"" + day + "T01:00:00Z\",\"payload\":{\"model\":\"priced-test\",\"info\":{\"total_token_usage\":{\"input_tokens\":1000,\"cached_input_tokens\":0,\"output_tokens\":10}}}}\n");
     WriteBytes(logs + L"\\b.jsonl",
-        "{\"timestamp\":\"2026-09-24T02:00:00Z\",\"payload\":{\"model\":\"mystery-model\",\"info\":{\"total_token_usage\":{\"input_tokens\":5,\"cached_input_tokens\":0,\"output_tokens\":5}}}}\n");
+        "{\"timestamp\":\"" + day + "T02:00:00Z\",\"payload\":{\"model\":\"mystery-model\",\"info\":{\"total_token_usage\":{\"input_tokens\":5,\"cached_input_tokens\":0,\"output_tokens\":5}}}}\n");
     SessionIndex sessions(logs, index);
     sessions.SetPriceForTest(L"priced-test", 2.0, 1.0, 8.0);
     const SessionScan first = sessions.Scan(UsageRange::Month);
@@ -280,6 +284,19 @@ void TestModelNameQuery() {
         }
     }
     Expect(uniqueDark && uniqueLight, "40 model colors stay unique");
+    for (bool lightTheme : {false, true}) {
+        for (int i = 0; i < 8; ++i) {
+            for (int j = i + 1; j < 8; ++j) {
+                const COLORREF a = SeriesModelColor(i, lightTheme);
+                const COLORREF b = SeriesModelColor(j, lightTheme);
+                const int r = static_cast<int>(GetRValue(a)) - GetRValue(b);
+                const int g = static_cast<int>(GetGValue(a)) - GetGValue(b);
+                const int blue = static_cast<int>(GetBValue(a)) - GetBValue(b);
+                Expect(r * r + g * g + blue * blue >= 80 * 80,
+                    "benchmark model colors have visibly separated RGB values");
+            }
+        }
+    }
     Expect(SeriesModelColor(0, false) != SeriesModelColor(12, false), "index 12 does not reuse index 0");
 }
 

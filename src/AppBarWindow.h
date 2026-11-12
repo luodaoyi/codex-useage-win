@@ -336,7 +336,6 @@ private:
     RECT refreshButtonRect_ = {};
     RECT modelScoresPrevRect_ = {};
     RECT modelScoresNextRect_ = {};
-    RECT modelScoresSourceRect_ = {};
 
     UsageSnapshot snapshot_;
     ModelIqSnapshot modelScores_;
