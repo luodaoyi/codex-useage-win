@@ -8,6 +8,8 @@ xai-*.json
 codex-*.json
 artifacts/
 *.obj
+*.res
+__pycache__/
 *.exe
 *.pdb
 *.ilk

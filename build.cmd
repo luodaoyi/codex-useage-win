@@ -12,10 +12,14 @@ if "%APP_VERSION_TEXT%"=="" set "APP_VERSION_TEXT=dev"
 call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
 if errorlevel 1 exit /b 1
 
+rc /nologo /fo ThirdPartyNotices.res ThirdPartyNotices.rc
+if errorlevel 1 exit /b 1
+
 cl /std:c++20 /utf-8 /EHsc /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN ^
   /DAPP_VERSION_W=L\"%APP_VERSION_TEXT%\" ^
   src\main.cpp ^
   src\AppBarWindow.cpp ^
+  src\GlassRenderer.cpp ^
   src\AppFeatures.cpp ^
   src\BrandIcons.cpp ^
   src\CodexUsageFetcher.cpp ^
@@ -28,8 +32,9 @@ cl /std:c++20 /utf-8 /EHsc /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN
   src\ResetStatus.cpp ^
   src\SessionIndex.cpp ^
   src\JsonLite.cpp ^
+  ThirdPartyNotices.res ^
   /Fe:CodexUsageBar.exe ^
-  /link advapi32.lib bcrypt.lib crypt32.lib ole32.lib secur32.lib shell32.lib shlwapi.lib comdlg32.lib winhttp.lib user32.lib gdi32.lib d2d1.lib dwrite.lib windowscodecs.lib ws2_32.lib
+  /link advapi32.lib bcrypt.lib crypt32.lib ole32.lib secur32.lib shell32.lib shlwapi.lib comdlg32.lib comctl32.lib winhttp.lib user32.lib gdi32.lib d2d1.lib d3d11.lib d3dcompiler.lib dxgi.lib dcomp.lib dwrite.lib windowscodecs.lib ws2_32.lib
 if errorlevel 1 exit /b 1
 
 cl /std:c++20 /utf-8 /EHsc /DUNICODE /D_UNICODE /DNOMINMAX /DWIN32_LEAN_AND_MEAN ^

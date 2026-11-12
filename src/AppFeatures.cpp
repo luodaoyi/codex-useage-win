@@ -200,6 +200,8 @@ int AppBarWindow::ExtraFeatureHeight() const {
 
 void AppBarWindow::LoadFeatureSettings() {
     const std::wstring path = GetSettingsPath();
+    glassFrosted_ = GetPrivateProfileIntW(L"appearance", L"frosted", 1, path.c_str()) != 0;
+    glassStrength_ = std::clamp(static_cast<int>(GetPrivateProfileIntW(L"appearance", L"strength", 75, path.c_str())), 0, 100);
     const int language = GetPrivateProfileIntW(L"features", L"language", -1, path.c_str());
     if (language >= 0 && language <= static_cast<int>(Language::French)) {
         language_ = static_cast<Language>(language);
@@ -232,9 +234,12 @@ void AppBarWindow::LoadFeatureSettings() {
 }
 
 void AppBarWindow::SaveFeatureSettings() const {
+    if (previewMode_) return;
     const std::wstring path = GetSettingsPath();
     std::error_code error;
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), error);
+    WritePrivateProfileStringW(L"appearance", L"frosted", glassFrosted_ ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"appearance", L"strength", std::to_wstring(glassStrength_).c_str(), path.c_str());
     WritePrivateProfileStringW(L"features", L"language", std::to_wstring(static_cast<int>(language_)).c_str(), path.c_str());
     WritePrivateProfileStringW(L"features", L"reset_status_enabled", resetStatusEnabled_ ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"features", L"reset_status_interval_seconds", std::to_wstring(resetStatusIntervalSeconds_).c_str(), path.c_str());

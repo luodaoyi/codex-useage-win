@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AccountLibrary.h"
+#include "GlassRenderer.h"
 #include "BrowserSignIn.h"
 #include "CodexUsageFetcher.h"
 #include "GrokBilling.h"
@@ -41,7 +42,7 @@ public:
     explicit AppBarWindow(HINSTANCE instance);
     ~AppBarWindow();
 
-    bool Create();
+    bool Create(const wchar_t* options = L"");
     int Run();
     void SetStickyMenu(HWND hwnd) { stickyMenu_ = hwnd; }
     std::vector<MenuEntry> BuildMenuEntries();
@@ -377,7 +378,17 @@ private:
 
     Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
-    Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> renderTarget_;
+    GlassRenderer glass_;
+    bool previewMode_ = false;
+    int settingsScroll_ = 0;
+    int settingsScrollMax_ = 0;
+    bool glassFrosted_ = true;
+    int glassStrength_ = 75;
+    RECT glassSliderRect_ = {};
+    bool glassSliderDragging_ = false;
+    bool glassSliderFocused_ = false;
+    void UpdateGlassSlider(int x);
+    Microsoft::WRL::ComPtr<ID2D1DeviceContext> renderTarget_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> solidBrush_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> codexIcon_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> grokIcon_;

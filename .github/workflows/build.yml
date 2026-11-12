@@ -36,6 +36,10 @@ jobs:
       - name: Build Release
         run: cmake --build build-${{ matrix.arch }} --config Release
 
+      - name: Check existing features
+        if: matrix.arch == 'x64'
+        run: ./build-x64/Release/CodexFeatureTests.exe
+
       - name: Prepare artifact
         shell: powershell
         run: |
@@ -43,6 +47,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           Copy-Item "build-${{ matrix.arch }}/Release/CodexUsageBar.exe" "$outDir/CodexUsageBar-${{ matrix.arch }}.exe"
           Copy-Item "README.md" "$outDir/README.md"
+          Copy-Item "README-zh.md" "$outDir/README-zh.md"
+          Copy-Item "THIRD_PARTY_NOTICES.md" "$outDir/THIRD_PARTY_NOTICES.md"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -70,3 +76,4 @@ jobs:
           files: |
             release-assets/CodexUsageBar-x64.exe
             release-assets/CodexUsageBar-ARM64.exe
+            release-assets/THIRD_PARTY_NOTICES.md

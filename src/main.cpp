@@ -32,11 +32,11 @@ std::wstring FormatLastErrorMessage(DWORD error) {
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR options, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     AppBarWindow window(instance);
-    if (!window.Create()) {
+    if (!window.Create(options)) {
         const std::wstring text = L"Failed to create CodexUsageBar window.\n\n" + FormatLastErrorMessage(GetLastError());
         MessageBoxW(nullptr, text.c_str(), L"CodexUsageBar", MB_ICONERROR | MB_OK);
         return 1;

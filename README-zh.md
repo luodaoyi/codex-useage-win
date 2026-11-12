@@ -1,6 +1,6 @@
 # CodexUsageBar
 
-原生 `Win32/C++` 的 Codex 用量桌面挂件，面向 Windows。
+原生 `Win32/C++` 的 Codex 用量桌面挂件，面向 Windows，支持实时液态玻璃和磨砂玻璃。
 
 [English README](README.md)
 [![Linux.do 社区](https://img.shields.io/badge/Linux.do-%E7%A4%BE%E5%8C%BA-2ea44f?style=flat-square)](https://linux.do/)
@@ -26,17 +26,46 @@
 
 ## 示例
 
-### 标准模式（含智能评分）
+### 磨砂玻璃（含智能评分）
 
 ![CodexUsageBar 标准模式](IMG/1.png)
 
-### 简单模式
+### 液态玻璃
+
+![CodexUsageBar 液态玻璃](IMG/3.png)
+
+### 简单模式：液态与磨砂
 
 ![CodexUsageBar 简单模式](IMG/2.png)
 
+![CodexUsageBar 磨砂简单模式](IMG/4.png)
+
+### 外观设置
+
+![玻璃材质与效果强度滑条](IMG/glass-settings.png)
+
+### 深色玻璃与任务栏模式
+
+![深色液态玻璃](IMG/glass-dark.png)
+
+![任务栏液态玻璃](IMG/glass-taskbar.png)
+
+以上图片均为程序在 Windows 上实际运行的截图，背景由截图工具生成，用量和排名使用离线示例数据。图中的模型名称及分数仅用于展示布局。
+
+## 玻璃外观
+
+打开**设置 → 玻璃外观**，或右键点击挂件。选择**液态玻璃**可以看到更明显的边缘折射和色散；选择**磨砂玻璃**可以获得更柔和的模糊背景。拖动 **0–100% 效果强度滑条**即可实时预览。点击滑条后，方向键每次调整 1%，Home / End 调整至两端。材质和强度保存在程序旁 `settings.ini` 的 `[appearance]` 段。设置页支持滚轮滚动，以便在小屏幕上访问其余选项。
+
+程序使用 Direct3D 11、DirectComposition 和自定义着色器处理窗口背后的真实画面，再通过 Direct2D 绘制清晰的文字和图表。主次文字使用更强的对比，彩色数据会调整明暗，玻璃也会限制内容区的背景亮度，避免复杂图片淹没小字。这些处理参考了 Apple 的[材质](https://developer.apple.com/design/human-interface-guidelines/materials)与[颜色](https://developer.apple.com/design/human-interface-guidelines/color)指南，具体效果由 Windows 渲染器实现。
+
+需要 Windows 10 2004 或更新版本，以及支持 Direct3D 11 的显卡。如果桌面采集暂不可用，例如进入安全桌面或采集被拒绝，程序会显示实色面板，在外观设置中提示，并稍后重试。为避免玻璃采集到自身，程序会将窗口排除在 DXGI Desktop Duplication 之外，因此使用该接口的远控或录屏软件可能看不到挂件；需要使用兼容排除方式的系统，还可能在其他截图工具中隐藏挂件。挂件跨屏移动时会切换当前显示器，不会将两个显示器拼接进同一块玻璃。
+
+如需重新生成全部截图，请先构建 Release，安装 Pillow，然后运行 `python tools/capture_readme.py`。脚本使用 `--preview` 启动示例界面，并检查滑条实时变化、键盘端点和设置页滚动。
+
 ## 功能
 
-- 原生 `Win32 + Direct2D + DirectWrite + WinHTTP`
+- 原生 `Win32 + Direct3D 11 + DirectComposition + Direct2D + DirectWrite + WinHTTP`
+- 可配置液态／磨砂玻璃，支持 0–100% 实时效果滑条
 - 无 `C#`、无 `WebView`
 - 运行时只读取可执行文件同目录的 `accounts\*.json`（一账号一文件）。右键「账号 → 导入…」选择凭证文件后，程序把该文件复制进 `accounts\`，不修改原文件。右键切换已导入账号。当前选择记在可执行文件同目录 `settings.ini` 的 `active_auth`
 - 同时接受 Codex 原生（`tokens.access_token`）和 CPA 导出的扁平文件（顶层 `access_token` / `id_token` / `refresh_token`，`type` 为 `codex`）
@@ -57,6 +86,8 @@
 - 支持 `Lock position` 固定位置开关
 - 支持 `完整模式` / `简单模式` / `任务栏模式` 显示模式切换
 - 支持中英文界面切换
+
+玻璃渲染参考了采用 MIT 许可证的 [Atrium Desktop](https://github.com/wynter-yaxley/atrium-desktop)，许可证说明见[第三方声明](THIRD_PARTY_NOTICES.md)。
 
 ## 刷新策略
 

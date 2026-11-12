@@ -1,6 +1,6 @@
 # CodexUsageBar
 
-A native `Win32/C++` desktop widget for Windows that shows your Codex usage budget at a glance.
+A native `Win32/C++` desktop widget for Windows with real-time liquid and frosted glass, showing your Codex usage budget at a glance.
 
 [中文说明](README-zh.md)
 [![Linux.do Community](https://img.shields.io/badge/Linux.do-Community-2ea44f?style=flat-square)](https://linux.do/)
@@ -26,17 +26,46 @@ The widget reads usage limits from the current Codex account and displays them i
 
 ## Screenshots
 
-### Standard Mode (with smart ranking)
+### Frosted Glass (with smart ranking)
 
 ![CodexUsageBar standard mode](IMG/standard-en.png)
 
-### Simple Mode
+### Liquid Glass
+
+![CodexUsageBar liquid glass](IMG/3.png)
+
+### Simple Mode — Liquid and Frosted
+
+![CodexUsageBar liquid simple mode](IMG/2.png)
 
 ![CodexUsageBar simple mode](IMG/4.png)
 
+### Appearance Settings
+
+![Glass material and strength slider](IMG/glass-settings.png)
+
+### Dark Glass and Taskbar Mode
+
+![Dark liquid glass](IMG/glass-dark.png)
+
+![Liquid glass taskbar mode](IMG/glass-taskbar.png)
+
+These are captures of the running Windows app over a generated backdrop, with offline sample usage and ranking data. The model names and scores in these screenshots are illustrative.
+
+## Glass Appearance
+
+Open **Settings → Glass appearance**, or right-click the widget. Choose **Liquid glass** for stronger edge refraction and dispersion, or **Frosted glass** for a softer, more blurred backdrop. Drag **Effect strength** from 0–100% to preview changes immediately; click the slider and use the arrow keys for 1% steps, or Home/End for the endpoints. The material and strength are saved beside the executable in `settings.ini` under `[appearance]`. Scroll the settings page to reach the remaining options.
+
+The glass uses Direct3D 11, DirectComposition and a custom shader. It samples the real screen behind the widget, while Direct2D draws crisp text and charts above it. Text uses stronger primary/secondary colors; colored data is adjusted for contrast, and the glass bounds its background luminance to keep dense information readable. This follows the legibility principles in Apple's [Materials](https://developer.apple.com/design/human-interface-guidelines/materials) and [Color](https://developer.apple.com/design/human-interface-guidelines/color) guidance; it is a custom Windows implementation.
+
+Windows 10 version 2004 or later and a Direct3D 11-capable GPU are required. If desktop capture is unavailable (for example, on the secure desktop or when capture is denied), the widget shows an opaque surface and reports this in Appearance settings, then retries capture. The widget is excluded from DXGI Desktop Duplication to prevent recursive feedback, so remote-control/recording software using that API may omit it. On systems that require the capture-exclusion fallback, other capture tools may omit it too. Moving a widget across monitors samples its current monitor; it does not stitch two monitors inside one widget.
+
+To reproduce all screenshots after a Release build, install Pillow and run `python tools/capture_readme.py`. The script starts `--preview` instances with sample data and checks the live material slider, keyboard endpoint and settings scrolling.
+
 ## Features
 
-- Native `Win32 + Direct2D + DirectWrite + WinHTTP`
+- Native `Win32 + Direct3D 11 + DirectComposition + Direct2D + DirectWrite + WinHTTP`
+- Configurable liquid/frosted glass with a live 0–100% effect slider
 - No `C#`, no `WebView`
 - Runtime reads only `accounts\*.json` next to the executable (one file per account). Account → Import… copies the chosen auth file into `accounts\` and does not modify the source. Switch imported accounts from that menu. The choice is `active_auth` in `settings.ini` next to the executable
 - Accepts both native Codex auth (`tokens.access_token`) and a flat CPA export (`access_token` / `id_token` / `refresh_token` at the root, `type` = `codex`)
@@ -57,6 +86,8 @@ The widget reads usage limits from the current Codex account and displays them i
 - Lock-position toggle
 - Display mode switch for full, simple, and taskbar layouts
 - UI language switch between English and Chinese
+
+Glass rendering draws on the MIT-licensed [Atrium Desktop](https://github.com/wynter-yaxley/atrium-desktop) implementation. See [third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Refresh Behavior
 

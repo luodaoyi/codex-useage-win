@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(CodexUsageBar VERSION 0.1.0 LANGUAGES CXX)
+project(CodexUsageBar VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,8 +41,10 @@ set(USAGE_BAR_SOURCES
 )
 
 add_executable(CodexUsageBar WIN32
+    ThirdPartyNotices.rc
     src/main.cpp
     src/AppBarWindow.cpp
+    src/GlassRenderer.cpp
     src/AppFeatures.cpp
     src/BrandIcons.cpp
     src/CodexUsageFetcher.cpp
@@ -55,7 +57,7 @@ add_executable(CodexFeatureTests
     ${USAGE_BAR_SOURCES}
 )
 
-target_include_directories(CodexUsageBar PRIVATE src)
+target_include_directories(CodexUsageBar PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_definitions(CodexUsageBar PRIVATE
     UNICODE
@@ -72,6 +74,10 @@ target_link_libraries(CodexUsageBar PRIVATE
     bcrypt
     crypt32
     d2d1
+    d3d11
+    d3dcompiler
+    dxgi
+    dcomp
     dwrite
     windowscodecs
     gdi32
@@ -80,6 +86,7 @@ target_link_libraries(CodexUsageBar PRIVATE
     shell32
     shlwapi
     comdlg32
+    comctl32
     user32
     winhttp
     ws2_32

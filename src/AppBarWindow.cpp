@@ -89,13 +89,15 @@ constexpr UINT kCommandLanguageJapanese = 62;
 constexpr UINT kCommandLanguageRussian = 63;
 constexpr UINT kCommandLanguageFrench = 64;
 constexpr UINT kCommandCloseMenu = 70;
-constexpr UINT kModelScoreQueryEditId = 90;
 constexpr UINT kUiSettings = 80;
 constexpr UINT kUiAccounts = 81;
 constexpr UINT kUiCloseSheet = 82;
 constexpr UINT kUiPrevAccount = 83;
 constexpr UINT kUiNextAccount = 84;
 constexpr UINT kUiSummary = 85;
+constexpr UINT kCommandGlassLiquid = 86;
+constexpr UINT kCommandGlassFrosted = 87;
+constexpr UINT_PTR kGlassTimerId = 7;
 constexpr UINT kCommandAccountBase = 1000;
 constexpr UINT kMaxAuthMenuAccounts = 64;
 constexpr int kModelScoresPageSize = 10;
@@ -336,10 +338,48 @@ AppBarWindow::~AppBarWindow() {
     DiscardDeviceResources();
 }
 
-bool AppBarWindow::Create() {
+bool AppBarWindow::Create(const wchar_t* options) {
+    const std::wstring arguments(options);
+    previewMode_ = arguments.find(L"--preview") != std::wstring::npos;
     RegisterWindowClass();
-    LoadSettings();
-    LoadFeatureSettings();
+    if (!previewMode_) {
+        LoadSettings();
+        LoadFeatureSettings();
+    } else {
+        accounts_ = AccountLibrary(GetExecutablePath() + L".preview-empty");
+        language_ = arguments.find(L"--english") != std::wstring::npos ? Language::English : Language::Chinese;
+        glassFrosted_ = arguments.find(L"--liquid") == std::wstring::npos;
+        simpleMode_ = arguments.find(L"--simple") != std::wstring::npos;
+        taskbarMode_ = arguments.find(L"--taskbar") != std::wstring::npos;
+        if (arguments.find(L"--settings") != std::wstring::npos) surface_ = Surface::Settings;
+        snapshot_.success = true;
+        snapshot_.planType = L"pro";
+        snapshot_.email = L"demo@example.com";
+        const auto now = static_cast<long long>(std::time(nullptr));
+        snapshot_.fiveHour = {true, 28, 72, 18000, 8640, now + 8640, now - 9360, true};
+        snapshot_.weekly = {true, 41, 59, 604800, 284400, now + 284400, now - 320400, true};
+        lastSuccessfulRefreshUnixSeconds_ = now;
+        resetStatusEnabled_ = false;
+        estimateEnabled_ = false;
+        if (arguments.find(L"--radar") != std::wstring::npos) {
+            showModelScores_ = true;
+            modelScores_.success = true;
+            for (int i = 0; i < 6; ++i) {
+                ModelIqScore score;
+                score.label = std::wstring(L"GPT demo ") + std::to_wstring(i + 1);
+                score.model = score.label;
+                score.familyKey = L"gpt";
+                score.effort = i % 2 ? L"high" : L"xhigh";
+                score.score = 142.5 - i * 4.3;
+                score.averagePriceUsd = 0.83 + i * 0.42;
+                score.hasPrice = score.hasDuration = true;
+                score.averageMinutes = 8.2 + i * 1.5;
+                score.status = i < 3 ? L"green" : L"yellow";
+                score.updatedAt = L"2026-11-12T08:00:00Z";
+                modelScores_.scores.push_back(score);
+            }
+        }
+    }
     for (const AccountEntry& account : accounts_.List(L"")) {
         if (_wcsicmp(account.id.c_str(), activeAuthId_.c_str()) == 0 && !account.provider.empty()) {
             provider_ = account.provider;
@@ -349,7 +389,7 @@ bool AppBarWindow::Create() {
     }
     NormalizeSingleAccountProvider();
     hwnd_ = CreateWindowExW(
-        WS_EX_TOOLWINDOW,
+        WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
         kWindowClassName,
         LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"),
         WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
@@ -371,7 +411,13 @@ bool AppBarWindow::Create() {
     }
 
     RefreshTheme();
+    if (previewMode_) lightTheme_ = arguments.find(L"--dark") == std::wstring::npos;
     UpdateWindowBounds(true);
+    const HRESULT graphics = CreateDeviceResources();
+    if (FAILED(graphics)) {
+        SetLastError(static_cast<DWORD>(graphics));
+        return false;
+    }
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
     InvalidateRect(hwnd_, nullptr, TRUE);
@@ -379,6 +425,8 @@ bool AppBarWindow::Create() {
     refreshCountdownSeconds_ = refreshIntervalSeconds_;
     releaseCheckCountdownSeconds_ = kReleaseCheckIntervalSeconds;
     SetTimer(hwnd_, kCountdownTimerId, 1000, nullptr);
+    SetTimer(hwnd_, kGlassTimerId, 33, nullptr);
+    if (previewMode_) return true;
     RestartRefreshTimer();
     SetTimer(hwnd_, kTokenMaintenanceTimerId, static_cast<UINT>(kTokenMaintenanceIntervalSeconds * 1000), nullptr);
     RequestTokenMaintenance();
@@ -422,7 +470,9 @@ LRESULT CALLBACK AppBarWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam
 LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
         case WM_TIMER:
-            if (wParam == kCountdownTimerId) {
+            if (wParam == kGlassTimerId) {
+                if (!IsIconic(hwnd_) && IsWindowVisible(hwnd_)) InvalidateRect(hwnd_, nullptr, FALSE);
+            } else if (wParam == kCountdownTimerId) {
                 if (snapshot_.success) {
                     snapshot_.fiveHour.resetAfterSeconds = std::max(0, snapshot_.fiveHour.resetAfterSeconds - 1);
                     snapshot_.weekly.resetAfterSeconds = std::max(0, snapshot_.weekly.resetAfterSeconds - 1);
@@ -494,6 +544,7 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_DISPLAYCHANGE:
+            DiscardDeviceResources();
             UpdateWindowBounds(true);
             return 0;
 
@@ -508,6 +559,10 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             GetCursorPos(&screenPoint);
             POINT clientPoint = screenPoint;
             ScreenToClient(hwnd_, &clientPoint);
+            if (PtInRect(&glassSliderRect_, clientPoint)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             switch (HitTestDragMode(clientPoint)) {
                 case DragMode::ResizeRight:
                     SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
@@ -531,6 +586,14 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             POINT screenPoint = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             ClientToScreen(hwnd_, &screenPoint);
             POINT clientPoint = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            glassSliderFocused_ = PtInRect(&glassSliderRect_, clientPoint) != FALSE;
+            if (glassSliderFocused_) {
+                glassSliderDragging_ = true;
+                SetFocus(hwnd_);
+                SetCapture(hwnd_);
+                UpdateGlassSlider(clientPoint.x);
+                return 0;
+            }
             if (TryHandleActionButtonClick(clientPoint)) {
                 return 0;
             }
@@ -538,7 +601,19 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
 
+        case WM_MOUSEWHEEL:
+            if (surface_ == Surface::Settings) {
+                settingsScroll_ = std::clamp(settingsScroll_ - GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA * ScaleForDpi(hwnd_, 72), 0, settingsScrollMax_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            break;
+
         case WM_MOUSEMOVE:
+            if (glassSliderDragging_) {
+                UpdateGlassSlider(GET_X_LPARAM(lParam));
+                return 0;
+            }
             if (dragMode_ != DragMode::None) {
                 POINT screenPoint = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
                 ClientToScreen(hwnd_, &screenPoint);
@@ -548,18 +623,50 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             break;
 
         case WM_LBUTTONUP:
+            if (glassSliderDragging_) {
+                glassSliderDragging_ = false;
+                ReleaseCapture();
+                SaveFeatureSettings();
+                return 0;
+            }
             if (dragMode_ != DragMode::None) {
                 EndDrag(true);
             }
             return 0;
 
+        case WM_KEYDOWN:
+            if (surface_ == Surface::Settings && wParam == VK_TAB) {
+                glassSliderFocused_ = true;
+                SetFocus(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            if (glassSliderFocused_ && surface_ == Surface::Settings) {
+                int value = glassStrength_;
+                if (wParam == VK_LEFT || wParam == VK_DOWN) value -= 1;
+                else if (wParam == VK_RIGHT || wParam == VK_UP) value += 1;
+                else if (wParam == VK_HOME) value = 0;
+                else if (wParam == VK_END) value = 100;
+                else break;
+                glassStrength_ = std::clamp(value, 0, 100);
+                SaveFeatureSettings();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            break;
+
         case WM_CAPTURECHANGED:
+            if (glassSliderDragging_) {
+                glassSliderDragging_ = false;
+                SaveFeatureSettings();
+            }
             if (dragMode_ != DragMode::None) {
                 EndDrag(true);
             }
             return 0;
 
         case WM_CONTEXTMENU:
+            ShowContextMenu({});
             return 0;
 
         case kUsageUpdatedMessage:
@@ -661,6 +768,7 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                 DeleteObject(modelScoreQueryBrush_);
                 modelScoreQueryBrush_ = nullptr;
             }
+            KillTimer(hwnd_, kGlassTimerId);
             KillTimer(hwnd_, kCountdownTimerId);
             KillTimer(hwnd_, kRefreshTimerId);
             KillTimer(hwnd_, kResetConfirmTimerId);
@@ -868,8 +976,7 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
         return chrome + SummaryContentHeight() + GetModelScoresPanelHeight();
     }
     if (surface_ == Surface::Settings) {
-        const int accountRows = static_cast<int>(accounts_.List(L"").size());
-        return chrome + ScaleForDpi(hwnd_, 848 + accountRows * 30) + dropExtra;
+        return chrome + ScaleForDpi(hwnd_, 600) + dropExtra;
     }
     if (surface_ == Surface::Accounts) {
         const int count = static_cast<int>(accounts_.List(provider_).size());
@@ -939,8 +1046,7 @@ void AppBarWindow::SetLanguage(Language language) {
     if (hwnd_ != nullptr) {
         SetWindowTextW(hwnd_, LocalizeText(L"Codex Usage Widget", L"Codex 用量挂件"));
         if (modelScoreQueryEdit_ != nullptr) {
-            SendMessageW(modelScoreQueryEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(
-                LocalizeText(L"Filter names, e.g. flash or luna", L"过滤模型名，如 flash 或 luna")));
+            SendMessageW(modelScoreQueryEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L""));
         }
         InvalidateRect(hwnd_, nullptr, TRUE);
     }
@@ -1070,24 +1176,41 @@ void AppBarWindow::EnsureModelScoreQueryEdit() {
         return;
     }
     modelScoreQueryEdit_ = CreateWindowExW(
-        0,
+        WS_EX_TOOLWINDOW,
         L"EDIT",
         L"",
-        WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_LEFT,
+        WS_POPUP | WS_BORDER | ES_AUTOHSCROLL | ES_LEFT,
         0,
         0,
         0,
         0,
         hwnd_,
-        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kModelScoreQueryEditId)),
+        nullptr,
         instance_,
         nullptr);
     if (modelScoreQueryEdit_ == nullptr) {
         return;
     }
+    GlassRenderer::ExcludeWindow(modelScoreQueryEdit_);
+    SetWindowSubclass(modelScoreQueryEdit_, [](HWND edit, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR data) -> LRESULT {
+        const LRESULT result = DefSubclassProc(edit, message, wParam, lParam);
+        if (message == WM_PAINT && GetWindowTextLengthW(edit) == 0) {
+            const auto* self = reinterpret_cast<AppBarWindow*>(data);
+            HDC dc = GetDC(edit);
+            RECT rect{};
+            GetClientRect(edit, &rect);
+            rect.left += ScaleForDpi(edit, 3);
+            const HGDIOBJ old = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(edit, WM_GETFONT, 0, 0)));
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, self->lightTheme_ ? RGB(53, 65, 83) : RGB(216, 224, 235));
+            DrawTextW(dc, self->LocalizeText(L"Filter names, e.g. flash or luna", L"过滤模型名，如 flash 或 luna"), -1, &rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            SelectObject(dc, old);
+            ReleaseDC(edit, dc);
+        }
+        return result;
+    }, 1, reinterpret_cast<DWORD_PTR>(this));
     SendMessageW(modelScoreQueryEdit_, EM_SETLIMITTEXT, 64, 0);
-    SendMessageW(modelScoreQueryEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(
-        LocalizeText(L"Filter names, e.g. flash or luna", L"过滤模型名，如 flash 或 luna")));
+    SendMessageW(modelScoreQueryEdit_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L""));
     UpdateModelScoreQueryChrome();
 }
 
@@ -1125,22 +1248,22 @@ void AppBarWindow::PlaceModelScoreQueryEdit(const RECT& rect) {
     }
     UpdateModelScoreQueryChrome();
     modelScoreQueryPlaced_ = true;
+    RECT screenRect = rect;
+    MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&screenRect), 2);
     RECT current = {};
     GetWindowRect(modelScoreQueryEdit_, &current);
-    MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&current), 2);
     if (IsWindowVisible(modelScoreQueryEdit_)
-        && current.left == rect.left && current.top == rect.top
-        && current.right == rect.right && current.bottom == rect.bottom) {
+        && EqualRect(&current, &screenRect)) {
         return;
     }
     SetWindowPos(
         modelScoreQueryEdit_,
-        nullptr,
-        rect.left,
-        rect.top,
+        (GetWindowLongPtrW(hwnd_, GWL_EXSTYLE) & WS_EX_TOPMOST) ? HWND_TOPMOST : HWND_TOP,
+        screenRect.left,
+        screenRect.top,
         std::max(1, static_cast<int>(rect.right - rect.left)),
         std::max(1, static_cast<int>(rect.bottom - rect.top)),
-        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 void AppBarWindow::HideModelScoreQueryEdit() {
@@ -1504,6 +1627,7 @@ void AppBarWindow::LoadSettings() {
 }
 
 void AppBarWindow::SaveSettings() const {
+    if (previewMode_) return;
     if (!hasSavedRect_) {
         return;
     }
@@ -1779,29 +1903,22 @@ HRESULT AppBarWindow::EnsureTextFormats() {
 }
 
 HRESULT AppBarWindow::CreateDeviceResources() {
-    if (FAILED(CreateDeviceIndependentResources())) {
-        return E_FAIL;
+    if (FAILED(CreateDeviceIndependentResources())) return E_FAIL;
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    HRESULT hr = glass_.Ensure(hwnd_, RectWidth(client), RectHeight(client));
+    if (FAILED(hr)) return hr;
+    if (renderTarget_.Get() != glass_.Context()) {
+        codexIcon_.Reset();
+        grokIcon_.Reset();
+        solidBrush_.Reset();
+        renderTarget_ = glass_.Context();
     }
-
-    if (!renderTarget_) {
-        const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
-            D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-            96.0f,
-            96.0f,
-            D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE);
-        HRESULT hr = d2dFactory_->CreateDCRenderTarget(&properties, renderTarget_.GetAddressOf());
-        if (FAILED(hr)) {
-            return hr;
-        }
-
+    if (!solidBrush_) {
         hr = renderTarget_->CreateSolidColorBrush(D2D1::ColorF(0, 0.0f), solidBrush_.GetAddressOf());
-        if (FAILED(hr)) {
-            return hr;
-        }
+        if (FAILED(hr)) return hr;
         EnsureBrandIcons();
     }
-
     return EnsureTextFormats();
 }
 
@@ -1863,6 +1980,7 @@ void AppBarWindow::DiscardDeviceResources() {
     grokIcon_.Reset();
     solidBrush_.Reset();
     renderTarget_.Reset();
+    glass_.Reset();
 }
 
 AppBarWindow::DragMode AppBarWindow::HitTestDragMode(POINT clientPoint) const {
@@ -1941,6 +2059,7 @@ void AppBarWindow::EndDrag(bool saveSettings) {
 }
 
 void AppBarWindow::RequestRefresh(bool force) {
+    if (previewMode_) return;
     bool expected = false;
     if (!force && !refreshInFlight_.compare_exchange_strong(expected, true)) {
         return;
@@ -2055,6 +2174,7 @@ void AppBarWindow::SeedSummaryRows() {
 }
 
 void AppBarWindow::RequestSummaryRefresh() {
+    if (previewMode_) return;
     SeedSummaryRows();
     if (hwnd_ != nullptr && !taskbarMode_) {
         FitWindowToContent();
@@ -2695,41 +2815,47 @@ void AppBarWindow::SetModelScoreMode(bool enabled, RadarMetricKind kind) {
 
 static long long Iso8601ToUnix(const std::wstring& text);
 
-void AppBarWindow::Paint(HDC hdc) {
-    RECT clientRect = {};
+void AppBarWindow::UpdateGlassSlider(int x) {
+    const int width = RectWidth(glassSliderRect_);
+    if (width <= 0) return;
+    glassStrength_ = static_cast<int>(std::clamp((x - glassSliderRect_.left) * 100LL / width, 0LL, 100LL));
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void AppBarWindow::Paint(HDC) {
+    RECT clientRect{};
     GetClientRect(hwnd_, &clientRect);
-
-    if (RectWidth(clientRect) <= 0 || RectHeight(clientRect) <= 0) {
-        return;
-    }
-
-    if (FAILED(CreateDeviceResources())) {
-        return;
-    }
-
-    if (FAILED(renderTarget_->BindDC(hdc, &clientRect))) {
+    if (RectWidth(clientRect) <= 0 || RectHeight(clientRect) <= 0) return;
+    HRESULT hr = CreateDeviceResources();
+    if (FAILED(hr)) {
         DiscardDeviceResources();
         return;
     }
-
+    hr = glass_.DrawBackdrop(glassFrosted_, glassStrength_, lightTheme_);
+    if (FAILED(hr)) {
+        DiscardDeviceResources();
+        return;
+    }
     const UINT dpi = GetDpiForWindow(hwnd_);
     renderTarget_->SetDpi(static_cast<float>(dpi), static_cast<float>(dpi));
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Scale(96.0f / dpi, 96.0f / dpi));
     renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    renderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-
+    renderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     renderTarget_->BeginDraw();
+    Microsoft::WRL::ComPtr<ID2D1RoundedRectangleGeometry> clip;
+    const float radius = std::min(22.0f * dpi / 96.0f, std::min(RectWidth(clientRect), RectHeight(clientRect)) * 0.5f - 1);
+    Microsoft::WRL::ComPtr<ID2D1Factory> drawingFactory;
+    renderTarget_->GetFactory(&drawingFactory);
+    hr = drawingFactory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(
+        D2D1::RectF(1, 1, static_cast<float>(clientRect.right - 1), static_cast<float>(clientRect.bottom - 1)), radius, radius), &clip);
+    if (SUCCEEDED(hr)) renderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), clip.Get()), nullptr);
     PaintContent(clientRect);
     DrawAccountDropdown();
-    const HRESULT hr = renderTarget_->EndDraw();
-    if (hr == D2DERR_RECREATE_TARGET) {
-        DiscardDeviceResources();
-    }
-    if (!modelScoreQueryPlaced_) {
-        HideModelScoreQueryEdit();
-    } else if (modelScoreQueryEdit_ != nullptr) {
-        RedrawWindow(modelScoreQueryEdit_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
-    }
+    if (clip) renderTarget_->PopLayer();
+    hr = renderTarget_->EndDraw();
+    if (SUCCEEDED(hr)) hr = glass_.Present();
+    if (FAILED(hr)) DiscardDeviceResources();
+    if (!modelScoreQueryPlaced_) HideModelScoreQueryEdit();
 }
 
 void AppBarWindow::DrawAccountDropdown() {
@@ -2789,6 +2915,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     RECT clientRect = outerRect;
     refreshButtonRect_ = {};
     uiHits_.clear();
+    glassSliderRect_ = {};
     modelScoresPrevRect_ = {};
     modelScoreQueryPlaced_ = false;
     modelScoresNextRect_ = {};
@@ -2830,8 +2957,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     const COLORREF background = snapshot_.success
         ? ColorForRemainingPercent(lowestRemaining, true)
         : (lightTheme_ ? RGB(251, 252, 248) : RGB(24, 28, 25));
-    const COLORREF textPrimary = lightTheme_ ? RGB(21, 27, 24) : RGB(240, 244, 241);
-    const COLORREF textSecondary = lightTheme_ ? RGB(94, 106, 97) : RGB(167, 178, 171);
+    const COLORREF textPrimary = lightTheme_ ? RGB(20, 28, 40) : RGB(248, 250, 253);
+    const COLORREF textSecondary = lightTheme_ ? RGB(53, 65, 83) : RGB(216, 224, 235);
     const COLORREF border = lightTheme_ ? RGB(219, 224, 220) : RGB(57, 66, 60);
     const COLORREF shadow = lightTheme_ ? RGB(226, 231, 225) : RGB(10, 14, 12);
     const COLORREF heroValue = snapshot_.success
@@ -2840,13 +2967,20 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
     const COLORREF trackColor = lightTheme_ ? RGB(229, 235, 230) : RGB(68, 76, 71);
     const COLORREF budgetMarkerColor = lightTheme_ ? RGB(21, 27, 24) : RGB(240, 244, 241);
     auto fillRect = [&](const RECT& rect, COLORREF color) {
-        solidBrush_->SetColor(ToColorF(color));
-        renderTarget_->FillRectangle(ToRectF(rect), solidBrush_.Get());
+        if (color == background || color == shadow) return;
+        const int high = std::max({GetRValue(color), GetGValue(color), GetBValue(color)});
+        const int low = std::min({GetRValue(color), GetGValue(color), GetBValue(color)});
+        const bool paper = (lightTheme_ ? low > 175 : high < 100);
+        solidBrush_->SetColor(ToColorF(color, paper ? (glassFrosted_ ? 0.48f : 0.24f) : 0.95f));
+        const float radius = static_cast<float>(std::min(ScaleForDpi(hwnd_, 8), std::min(RectWidth(rect), RectHeight(rect)) / 2));
+        renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(ToRectF(rect), radius, radius), solidBrush_.Get());
     };
 
     auto drawRectBorder = [&](const RECT& rect, COLORREF color) {
-        solidBrush_->SetColor(ToColorF(color));
-        renderTarget_->DrawRectangle(ToRectF(rect), solidBrush_.Get(), 1.0f);
+        if (EqualRect(&rect, &outerRect) || EqualRect(&rect, &clientRect)) return;
+        solidBrush_->SetColor(ToColorF(color, 0.45f));
+        const float radius = static_cast<float>(std::min(ScaleForDpi(hwnd_, 8), std::min(RectWidth(rect), RectHeight(rect)) / 2));
+        renderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(ToRectF(rect), radius, radius), solidBrush_.Get(), 1.0f);
     };
 
     auto drawTextBlock = [&](IDWriteTextFormat* format,
@@ -2882,6 +3016,33 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
             }
         }
 
+        // Keep coloured data readable on the luminance-bounded glass. Preserve
+        // inverse labels on selected chips and retain hue while adjusting ink.
+        auto luminance = [](COLORREF value) {
+            auto linear = [](int channel) {
+                const double v = channel / 255.0;
+                return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+            };
+            return 0.2126 * linear(GetRValue(value)) + 0.7152 * linear(GetGValue(value)) + 0.0722 * linear(GetBValue(value));
+        };
+        const double originalLuma = luminance(color);
+        const bool inverse = lightTheme_ ? originalLuma > 0.85 : color == RGB(21, 27, 24);
+        if (!inverse && (lightTheme_ ? originalLuma > 0.10 : originalLuma < 0.70)) {
+            const int target = lightTheme_ ? 0 : 255;
+            float low = 0, high = 1;
+            for (int step = 0; step < 9; ++step) {
+                const float mix = (low + high) * 0.5f;
+                const COLORREF adjusted = RGB(
+                    static_cast<int>(GetRValue(color) + (target - GetRValue(color)) * mix),
+                    static_cast<int>(GetGValue(color) + (target - GetGValue(color)) * mix),
+                    static_cast<int>(GetBValue(color) + (target - GetBValue(color)) * mix));
+                if (lightTheme_ ? luminance(adjusted) > 0.10 : luminance(adjusted) < 0.70) low = mix;
+                else high = mix;
+            }
+            color = RGB(static_cast<int>(GetRValue(color) + (target - GetRValue(color)) * high),
+                static_cast<int>(GetGValue(color) + (target - GetGValue(color)) * high),
+                static_cast<int>(GetBValue(color) + (target - GetBValue(color)) * high));
+        }
         solidBrush_->SetColor(ToColorF(color));
         renderTarget_->DrawTextLayout(
             D2D1::Point2F(static_cast<float>(rect.left), static_cast<float>(rect.top)),
@@ -3325,6 +3486,7 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         const int row1 = clientRect.top + ScaleForDpi(hwnd_, 10);
         const int row2 = row1 + rowH + gap;
         auto addHit = [&](const RECT& rect, UINT command, const std::wstring& accountId = L"") {
+            if (rect.top < clientRect.top || rect.bottom > clientRect.bottom) return;
             UiHit hit;
             hit.rect = rect;
             hit.command = command;
@@ -3392,7 +3554,8 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
         clientRect.top += chromeH;
         if (surface_ == Surface::Accounts || surface_ == Surface::Settings) {
             fillRect(clientRect, background);
-            int y = clientRect.top + ScaleForDpi(hwnd_, 8);
+            renderTarget_->PushAxisAlignedClip(ToRectF(clientRect), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            int y = clientRect.top + ScaleForDpi(hwnd_, 8) - (surface_ == Surface::Settings ? settingsScroll_ : 0);
             const int chipH = ScaleForDpi(hwnd_, 28);
             auto wrapChips = [&](std::vector<std::pair<std::wstring, UINT>> items, auto selected) {
                 int x = left;
@@ -3439,6 +3602,34 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                     {LocalizeText(L"Delete", L"删除"), kCommandDeleteAccount},
                 }, [](UINT) { return false; });
             } else {
+                section(LocalizeText(L"Glass appearance", L"玻璃外观"));
+                wrapChips({
+                    {LocalizeText(L"Liquid glass", L"液态玻璃"), kCommandGlassLiquid},
+                    {LocalizeText(L"Frosted glass", L"磨砂玻璃"), kCommandGlassFrosted},
+                }, [&](UINT command) { return glassFrosted_ ? command == kCommandGlassFrosted : command == kCommandGlassLiquid; });
+                RECT strengthLabel = MakeRect(left, y, right, y + ScaleForDpi(hwnd_, 20));
+                drawTextBlock(textFormatFoot_.Get(), std::wstring(LocalizeText(L"Effect strength", L"效果强度")) + L"  " + std::to_wstring(glassStrength_) + L"%", strengthLabel, textPrimary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, false);
+                y += ScaleForDpi(hwnd_, 24);
+                glassSliderRect_ = MakeRect(left + ScaleForDpi(hwnd_, 10), y, right - ScaleForDpi(hwnd_, 10), y + ScaleForDpi(hwnd_, 28));
+                const float centerY = (glassSliderRect_.top + glassSliderRect_.bottom) * 0.5f;
+                const float knobX = glassSliderRect_.left + RectWidth(glassSliderRect_) * glassStrength_ / 100.0f;
+                solidBrush_->SetColor(ToColorF(trackColor, 0.65f));
+                renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(glassSliderRect_.left), centerY), D2D1::Point2F(static_cast<float>(glassSliderRect_.right), centerY), solidBrush_.Get(), static_cast<float>(ScaleForDpi(hwnd_, 5)));
+                solidBrush_->SetColor(ToColorF(RGB(64, 137, 245)));
+                renderTarget_->DrawLine(D2D1::Point2F(static_cast<float>(glassSliderRect_.left), centerY), D2D1::Point2F(knobX, centerY), solidBrush_.Get(), static_cast<float>(ScaleForDpi(hwnd_, 5)));
+                solidBrush_->SetColor(ToColorF(lightTheme_ ? RGB(255, 255, 255) : RGB(220, 230, 245)));
+                const float knobR = static_cast<float>(ScaleForDpi(hwnd_, 9));
+                renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, centerY), knobR, knobR), solidBrush_.Get());
+                solidBrush_->SetColor(ToColorF(RGB(64, 137, 245), glassSliderFocused_ ? 1.f : 0.5f));
+                renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(knobX, centerY), knobR, knobR), solidBrush_.Get(), glassSliderFocused_ ? 2.f : 1.f);
+                y += ScaleForDpi(hwnd_, 34);
+                RECT hint = MakeRect(left, y, right, y + ScaleForDpi(hwnd_, 24));
+                drawTextBlock(textFormatFoot_.Get(), glass_.HasCapture()
+                    ? LocalizeText(L"Drag to preview · Arrow keys to fine tune", L"拖动实时预览 · 方向键微调")
+                    : LocalizeText(L"Live backdrop unavailable · using a solid surface", L"实时背景暂不可用 · 当前使用实色面板"), hint, textSecondary,
+                    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP, true);
+                y += ScaleForDpi(hwnd_, 36);
                 section(LocalizeText(L"Account", L"账号"));
                 const std::vector<AccountEntry> allAccounts = accounts_.List(L"");
                 if (allAccounts.empty()) {
@@ -3579,6 +3770,21 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 }, [](UINT) { return false; });
             }
             chip(MakeRect(left, y, left + ScaleForDpi(hwnd_, 120), y + chipH), LocalizeText(L"Back to usage", L"返回用量"), false, kUiCloseSheet);
+            if (surface_ == Surface::Settings) {
+                settingsScrollMax_ = std::max(0, y + chipH + ScaleForDpi(hwnd_, 18) + settingsScroll_ - static_cast<int>(clientRect.bottom));
+                RECT visibleSlider{};
+                if (!IntersectRect(&visibleSlider, &glassSliderRect_, &clientRect)) glassSliderRect_ = {};
+                else glassSliderRect_ = visibleSlider;
+                if (settingsScrollMax_ > 0) {
+                    const float height = static_cast<float>(RectHeight(clientRect));
+                    const float thumb = std::max(24.f, height * height / (height + settingsScrollMax_));
+                    const float top = clientRect.top + (height - thumb) * settingsScroll_ / settingsScrollMax_;
+                    solidBrush_->SetColor(ToColorF(textSecondary, 0.45f));
+                    renderTarget_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(static_cast<float>(clientRect.right - ScaleForDpi(hwnd_, 6)), top,
+                        static_cast<float>(clientRect.right - ScaleForDpi(hwnd_, 3)), top + thumb), 2, 2), solidBrush_.Get());
+                }
+            }
+            renderTarget_->PopAxisAlignedClip();
             return;
         }
         if (surface_ == Surface::Summary) {
@@ -4366,8 +4572,17 @@ HMENU AppBarWindow::CreateContextMenuHandle() {
 }
 
 void AppBarWindow::HandleMenuCommand(UINT command) {
+    if (previewMode_ && command != kCommandGlassLiquid && command != kCommandGlassFrosted
+        && command != kCommandFullMode && command != kCommandSimpleMode && command != kCommandTaskbarMode
+        && command != kCommandLanguageEnglish && command != kCommandLanguageChinese
+        && !(command >= kCommandLanguageTraditional && command <= kCommandLanguageFrench)
+        && command != kCommandExit) return;
     const size_t accountCount = std::min(authMenuAccounts_.size(), static_cast<size_t>(kMaxAuthMenuAccounts));
-    if (command == kCommandImportAccount) {
+    if (command == kCommandGlassLiquid || command == kCommandGlassFrosted) {
+        glassFrosted_ = command == kCommandGlassFrosted;
+        SaveFeatureSettings();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    } else if (command == kCommandImportAccount) {
         ImportAccount();
     } else if (command == kCommandPasteImport) {
         PasteImport(provider_);
