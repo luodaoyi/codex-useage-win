@@ -574,7 +574,7 @@ LRESULT AppBarWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
                     SetCursor(LoadCursorW(nullptr, IDC_SIZENWSE));
                     return TRUE;
                 case DragMode::Move:
-                    SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
                     return TRUE;
                 case DragMode::None:
                     break;
