@@ -967,6 +967,10 @@ int AppBarWindow::GetMinimumWidgetHeight(int width) const {
     if (taskbarMode_) {
         return CalculateTaskbarWidgetHeight(hwnd_);
     }
+    if (!previewMode_ && accounts_.List(L"").empty()
+        && (surface_ == Surface::Usage || surface_ == Surface::Summary)) {
+        return ScaleForDpi(hwnd_, 44 + 8) + GetModelScoresPanelHeight();
+    }
     const bool compactChrome = surface_ == Surface::Summary || !HasMultipleAccounts();
     const int chrome = ScaleForDpi(hwnd_, compactChrome ? 44 : 78);
     const int dropExtra = !compactChrome && accountDropOpen_
@@ -3785,6 +3789,11 @@ void AppBarWindow::PaintContent(const RECT& outerRect) {
                 }
             }
             renderTarget_->PopAxisAlignedClip();
+            return;
+        }
+        if (!previewMode_ && accounts_.List(L"").empty()) {
+            resetLinkRect_ = {};
+            drawModelScoresPanel(clientRect.top, left, right);
             return;
         }
         if (surface_ == Surface::Summary) {
